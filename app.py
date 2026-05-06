@@ -79,7 +79,69 @@ for k, v in defaults.items():
 # ══════════════════════════════════════════════════════
 # DATA GENERATION
 # ══════════════════════════════════════════════════════
-df = pd.read_csv("vn30f_1min.csv", parse_dates=["time"], index_col="time")
+import pandas as pd
+from datetime import datetime, timedelta
+from vnstock import stock_historical_data
+
+def get_real_ohlcv(tf_minutes='1', n_days=2):
+    """
+    Hàm lấy dữ liệu OHLCV thật của VN30F1M
+    
+    Parameters:
+    - tf_minutes: Khung thời gian (chuỗi: '1', '3', '5', '15', '30', '1D')
+    - n_days: Số ngày lịch sử muốn lấy lùi về trước
+    """
+    # 1. Xác định khoảng thời gian cần lấy dữ liệu
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=n_days)
+    
+    # Format ngày theo chuẩn YYYY-MM-DD
+    start_str = start_date.strftime('%Y-%m-%d')
+    end_str = end_date.strftime('%Y-%m-%d')
+    
+    print(f"Đang tải dữ liệu VN30F1M từ {start_str} đến {end_str} (Khung {tf_minutes} phút)...")
+    
+    try:
+        # 2. Gọi API vnstock để lấy dữ liệu phái sinh
+        # Lưu ý: type='derivative' để chỉ định đây là hợp đồng phái sinh
+        df = stock_historical_data(
+            symbol='VN30F1M', 
+            start_date=start_str, 
+            end_date=end_str, 
+            resolution=str(tf_minutes), 
+            type='derivative' 
+        )
+        
+        if df.empty:
+            print("Không có dữ liệu trả về. Kiểm tra lại ngày giờ (có thể rơi vào cuối tuần/ngày lễ).")
+            return df
+            
+        # 3. Chuẩn hóa lại DataFrame cho giống định dạng hàm cũ của bạn
+        # vnstock thường trả về các cột: time, open, high, low, close, volume
+        # Đảm bảo cột time là kiểu datetime
+        df['time'] = pd.to_datetime(df['time'])
+        
+        # Sắp xếp lại thời gian tăng dần và set index
+        df = df.sort_values('time')
+        df = df.set_index("time")
+        
+        # Chỉ giữ lại các cột OHLCV cơ bản
+        df = df[['open', 'high', 'low', 'close', 'volume']]
+        
+        return df
+        
+    except Exception as e:
+        print(f"Lỗi khi lấy dữ liệu: {e}")
+        return None
+
+# --- CÁCH SỬ DỤNG ---
+if __name__ == "__main__":
+    # Lấy dữ liệu khung 1 phút trong 2 ngày gần nhất
+    df_vn30f1m = get_real_ohlcv(tf_minutes='1', n_days=2)
+    
+    if df_vn30f1m is not None and not df_vn30f1m.empty:
+        print("\n5 nến gần nhất (Hiện tại):")
+        print(df_vn30f1m.tail(5))
 
 
 
