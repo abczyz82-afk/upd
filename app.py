@@ -77,11 +77,103 @@ for k, v in defaults.items():
 
 
 # ══════════════════════════════════════════════════════
-# DATA – REAL (vnstock3) với fallback mô phỏng
+# DATA – Lấy dữ liệu thực qua HTTP trực tiếp (không cần vnstock3)
+# Thứ tự ưu tiên: DNSE → SSI → TCBS → Mô phỏng
 # ══════════════════════════════════════════════════════
+import requests as _requests
+import math as _math
 
+_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8",
+}
+
+
+def _ts_range(tf_minutes: int, n_bars: int):
+    """Tính (from_ts, to_ts) unix timestamp đủ để có n_bars."""
+    bars_per_day = max(1, 285 // tf_minutes)
+    days_needed  = max(7, _math.ceil(n_bars / bars_per_day) + 5)
+    to_ts   = int(datetime.now().timestamp())
+    from_ts = int((datetime.now() - timedelta(days=days_needed)).timestamp())
+    return from_ts, to_ts
+
+
+def _parse_tv_udf(raw: dict, n_bars: int) -> pd.DataFrame:
+    """
+    Parse TradingView UDF format:
+    {"s":"ok","t":[...],"o":[...],"h":[...],"l":[...],"c":[...],"v":[...]}
+    """
+    status = raw.get("s", "")
+    if status != "ok":
+        raise ValueError(f"API status='{status}', errmsg={raw.get('errmsg','?')}")
+    if not raw.get("t"):
+        raise ValueError("Không có dữ liệu (mảng 't' rỗng)")
+    df = pd.DataFrame({
+        "time":   pd.to_datetime(raw["t"], unit="s", utc=True).tz_convert("Asia/Ho_Chi_Minh").tz_localize(None),
+        "open":   pd.to_numeric(raw["o"], errors="coerce"),
+        "high":   pd.to_numeric(raw["h"], errors="coerce"),
+        "low":    pd.to_numeric(raw["l"], errors="coerce"),
+        "close":  pd.to_numeric(raw["c"], errors="coerce"),
+        "volume": pd.to_numeric(raw["v"], errors="coerce"),
+    })
+    df = df.set_index("time").dropna().sort_index()
+    return df.tail(n_bars)
+
+
+# ── Nguồn 1: DNSE / Entrade (công khai, TradingView UDF) ─────────────────────
+def _fetch_dnse(tf_minutes: int, n_bars: int) -> pd.DataFrame:
+    from_ts, to_ts = _ts_range(tf_minutes, n_bars)
+    res = {1: "1", 5: "5", 15: "15", 30: "30", 60: "60"}.get(tf_minutes, "1")
+    url = "https://services.entrade.com.vn/chart-api/v2/ohlcs/derivative"
+    resp = _requests.get(url, params={
+        "from": from_ts, "to": to_ts,
+        "symbol": "VN30F1M", "resolution": res,
+    }, headers={**_HEADERS, "Referer": "https://entrade.com.vn/"}, timeout=10)
+    resp.raise_for_status()
+    return _parse_tv_udf(resp.json(), n_bars)
+
+
+# ── Nguồn 2: SSI iBoard (công khai, TradingView UDF) ─────────────────────────
+def _fetch_ssi(tf_minutes: int, n_bars: int) -> pd.DataFrame:
+    from_ts, to_ts = _ts_range(tf_minutes, n_bars)
+    res = {1: "1", 5: "5", 15: "15", 30: "30", 60: "60"}.get(tf_minutes, "1")
+    url = "https://iboard.ssi.com.vn/dchart/api/history"
+    resp = _requests.get(url, params={
+        "symbol": "VN30F1M", "resolution": res,
+        "from": from_ts, "to": to_ts,
+    }, headers={**_HEADERS, "Referer": "https://iboard.ssi.com.vn/"}, timeout=10)
+    resp.raise_for_status()
+    return _parse_tv_udf(resp.json(), n_bars)
+
+
+# ── Nguồn 3: TCBS futures-insight (endpoint đúng) ────────────────────────────
+def _fetch_tcbs(tf_minutes: int, n_bars: int) -> pd.DataFrame:
+    from_ts, to_ts = _ts_range(tf_minutes, n_bars)
+    res = {1: 1, 5: 5, 15: 15, 30: 30, 60: 60}.get(tf_minutes, 1)
+    url = "https://apipubaws.tcbs.com.vn/futures-insight/v1/stock/bars"
+    resp = _requests.get(url, params={
+        "ticker": "VN30F1M", "type": "derivative",
+        "resolution": res, "from": from_ts, "to": to_ts,
+    }, headers={**_HEADERS, "Referer": "https://tcinvest.tcbs.com.vn/"}, timeout=10)
+    resp.raise_for_status()
+    raw = resp.json()
+    # TCBS trả về {"t":[...],"o":[...],...} – cùng format TradingView UDF
+    if "t" in raw:
+        return _parse_tv_udf({**raw, "s": "ok"}, n_bars)
+    # Hoặc dạng {"data":[{"tradingDate":...,"open":...}]}
+    if "data" in raw and raw["data"]:
+        df = pd.DataFrame(raw["data"])
+        df = df.rename(columns={"tradingDate": "time", "matchedVol": "volume"})
+        df["time"] = pd.to_datetime(df["time"])
+        df = df.set_index("time")[["open","high","low","close","volume"]].dropna().sort_index()
+        return df.tail(n_bars)
+    raise ValueError(f"TCBS response keys: {list(raw.keys())}")
+
+
+# ── Fallback mô phỏng ─────────────────────────────────────────────────────────
 def _simulate_ohlcv(tf_minutes, n_bars=300, seed=42):
-    """Dữ liệu mô phỏng dùng khi không lấy được dữ liệu thực."""
     np.random.seed(seed + tf_minutes * 7)
     now = datetime.now().replace(second=0, microsecond=0)
     now -= timedelta(minutes=now.minute % tf_minutes)
@@ -101,158 +193,28 @@ def _simulate_ohlcv(tf_minutes, n_bars=300, seed=42):
     return df.set_index("time")
 
 
-def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
-    """Chuẩn hóa tên cột và index về dạng chuẩn."""
-    col_map = {}
-    for col in df.columns:
-        cl = col.lower().strip()
-        if cl in ("time", "date", "datetime", "tradingdate", "timestamp"):
-            col_map[col] = "time"
-        elif cl in ("open", "o", "mở cửa"):
-            col_map[col] = "open"
-        elif cl in ("high", "h", "cao nhất"):
-            col_map[col] = "high"
-        elif cl in ("low", "l", "thấp nhất"):
-            col_map[col] = "low"
-        elif cl in ("close", "c", "đóng cửa", "closePrice"):
-            col_map[col] = "close"
-        elif cl in ("volume", "vol", "v", "matchedvol", "khối lượng"):
-            col_map[col] = "volume"
-    df = df.rename(columns=col_map)
-
-    if "time" in df.columns:
-        df["time"] = pd.to_datetime(df["time"])
-        df = df.set_index("time")
-    elif not isinstance(df.index, pd.DatetimeIndex):
-        df.index = pd.to_datetime(df.index)
-
-    needed = [c for c in ("open", "high", "low", "close", "volume") if c in df.columns]
-    df = df[needed].dropna().sort_index()
-    return df
-
-
-def _fetch_via_tcbs_requests(tf_minutes: int, n_bars: int) -> pd.DataFrame:
-    """
-    Lấy dữ liệu VN30F1M trực tiếp qua TCBS REST API (không cần thư viện).
-    Endpoint: https://apipubaws.tcbs.com.vn/stock-insight/v1/stock/bars-long-term
-    """
-    import requests, math
-
-    RESOLUTION_MAP = {1: 1, 3: 3, 5: 5, 15: 15, 30: 30, 60: 60}
-    resolution = RESOLUTION_MAP.get(tf_minutes, 1)
-
-    bars_per_day = max(1, 285 // tf_minutes)
-    days_needed  = max(7, math.ceil(n_bars / bars_per_day) + 5)
-    to_ts   = int(datetime.now().timestamp())
-    from_ts = int((datetime.now() - timedelta(days=days_needed)).timestamp())
-
-    url = "https://apipubaws.tcbs.com.vn/stock-insight/v1/stock/bars-long-term"
-    params = {
-        "ticker":     "VN30F1M",
-        "type":       "derivative",
-        "resolution": resolution,
-        "from":       from_ts,
-        "to":         to_ts,
-    }
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-        "Referer": "https://tcinvest.tcbs.com.vn/",
-    }
-    resp = requests.get(url, params=params, headers=headers, timeout=10)
-    resp.raise_for_status()
-    raw = resp.json()
-
-    # Hai dạng response TCBS có thể trả về:
-    # Dạng 1: {"data": [{"tradingDate":..., "open":..., ...}]}
-    # Dạng 2: {"t":[...], "o":[...], "h":[...], "l":[...], "c":[...], "v":[...]}
-    if "data" in raw and isinstance(raw["data"], list) and len(raw["data"]) > 0:
-        df = pd.DataFrame(raw["data"])
-    elif "t" in raw:
-        df = pd.DataFrame({
-            "time":   [datetime.fromtimestamp(t) for t in raw["t"]],
-            "open":   raw["o"],
-            "high":   raw["h"],
-            "low":    raw["l"],
-            "close":  raw["c"],
-            "volume": raw["v"],
-        })
-    else:
-        raise ValueError(f"Response không hợp lệ. Keys: {list(raw.keys())}")
-
-    if df.empty:
-        raise ValueError("TCBS API trả về mảng rỗng")
-
-    df = _normalize_ohlcv(df)
-    return df.tail(n_bars)
-
-
 @st.cache_data(ttl=60)  # Cache 60 giây – tránh spam API
 def fetch_ohlcv(symbol: str, tf_minutes: int, n_bars: int = 300):
     """
-    Lấy dữ liệu OHLCV thực VN30F1M – thử theo thứ tự ưu tiên:
-      1. vnstock3  (source=TCBS) – tốt nhất cho futures intraday
-      2. vnstock3  (source=VCI)  – dự phòng
-      3. Requests trực tiếp đến TCBS REST API
-      4. Dữ liệu mô phỏng       – fallback cuối cùng
-
-    Lưu ý: symbol selectbox (VN30F2506...) chỉ dùng để hiển thị.
-    Dữ liệu luôn lấy qua alias "VN30F1M" (hợp đồng tháng gần nhất).
+    Lấy dữ liệu OHLCV thực VN30F1M – KHÔNG dùng vnstock3.
+    Thử 3 nguồn HTTP trực tiếp: DNSE → SSI → TCBS → Mô phỏng.
     """
-    INTERVAL_MAP = {1: "1m", 3: "3m", 5: "5m", 15: "15m", 30: "30m", 60: "1H"}
-    interval = INTERVAL_MAP.get(tf_minutes, "1m")
-
-    bars_per_day = max(1, 285 // tf_minutes)
-    days_needed  = max(7, (n_bars // bars_per_day) + 5)
-    end_date   = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - timedelta(days=days_needed)).strftime("%Y-%m-%d")
-
-    # ── Luôn dùng alias VN30F1M để lấy dữ liệu (không phải VN30F2506...) ──
-    DATA_SYMBOL = "VN30F1M"
+    sources = [
+        ("DNSE/Entrade", _fetch_dnse),
+        ("SSI iBoard",   _fetch_ssi),
+        ("TCBS futures", _fetch_tcbs),
+    ]
     errors = []
-
-    # ── Nguồn 1: vnstock3 TCBS ──
-    try:
-        from vnstock3 import Vnstock
-        stock = Vnstock().stock(symbol=DATA_SYMBOL, source="TCBS")
-        df = stock.quote.history(start=start_date, end=end_date, interval=interval)
-        if df is not None and not df.empty:
-            df = _normalize_ohlcv(df)
-            if len(df) >= 10:
-                if "data_source" not in st.session_state:
-                    st.session_state["data_source"] = f"✅ TCBS · {len(df)} bars"
-                return df.tail(n_bars)
-            errors.append(f"vnstock3/TCBS: chỉ {len(df)} bars")
-        else:
-            errors.append("vnstock3/TCBS: trả về rỗng")
-    except Exception as e:
-        errors.append(f"vnstock3/TCBS: {str(e)[:100]}")
-
-    # ── Nguồn 2: vnstock3 VCI ──
-    try:
-        from vnstock3 import Vnstock
-        stock = Vnstock().stock(symbol=DATA_SYMBOL, source="VCI")
-        df = stock.quote.history(start=start_date, end=end_date, interval=interval)
-        if df is not None and not df.empty:
-            df = _normalize_ohlcv(df)
-            if len(df) >= 10:
-                st.session_state["data_source"] = f"✅ VCI · {len(df)} bars"
-                return df.tail(n_bars)
-            errors.append(f"vnstock3/VCI: chỉ {len(df)} bars")
-        else:
-            errors.append("vnstock3/VCI: trả về rỗng")
-    except Exception as e:
-        errors.append(f"vnstock3/VCI: {str(e)[:100]}")
-
-    # ── Nguồn 3: TCBS REST API trực tiếp ──
-    try:
-        df = _fetch_via_tcbs_requests(tf_minutes, n_bars)
-        if len(df) >= 10:
-            st.session_state["data_source"] = f"✅ TCBS REST · {len(df)} bars"
-            return df
-        errors.append(f"TCBS REST: chỉ {len(df)} bars")
-    except Exception as e:
-        errors.append(f"TCBS REST: {str(e)[:100]}")
+    for name, fn in sources:
+        try:
+            df = fn(tf_minutes, n_bars)
+            if df is not None and len(df) >= 10:
+                st.session_state["data_source"] = f"✅ {name} · {len(df)} bars"
+                st.session_state["data_errors"] = []
+                return df
+            errors.append(f"{name}: chỉ {len(df) if df is not None else 0} bars")
+        except Exception as e:
+            errors.append(f"{name}: {str(e)[:120]}")
 
     # ── Fallback: mô phỏng ──
     st.session_state["data_source"] = "⚠️ Mô phỏng (lỗi tất cả nguồn)"
