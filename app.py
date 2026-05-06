@@ -77,72 +77,101 @@ for k, v in defaults.items():
 
 
 # ══════════════════════════════════════════════════════
-# DATA GENERATION
+# DATA – REAL (vnstock3) với fallback mô phỏng
 # ══════════════════════════════════════════════════════
-import pandas as pd
-from datetime import datetime, timedelta
-from vnstock import stock_historical_data
 
-def get_real_ohlcv(tf_minutes='1', n_days=2):
+def _simulate_ohlcv(tf_minutes, n_bars=300, seed=42):
+    """Dữ liệu mô phỏng dùng khi không lấy được dữ liệu thực."""
+    np.random.seed(seed + tf_minutes * 7)
+    now = datetime.now().replace(second=0, microsecond=0)
+    now -= timedelta(minutes=now.minute % tf_minutes)
+    times = [now - timedelta(minutes=tf_minutes * i) for i in range(n_bars)][::-1]
+    prices = [1280.0]
+    for i in range(1, n_bars):
+        phase = (i // 40) % 3
+        drift = 0.18 if phase == 0 else (-0.14 if phase == 2 else 0.0)
+        vol   = 0.32 if phase == 1 else 0.58
+        prices.append(max(prices[-1] + drift + np.random.normal(0, vol), 100))
+    df = pd.DataFrame({"time": times, "close": prices})
+    noise = np.abs(np.random.normal(0, 0.28, n_bars)) + 0.08
+    df["open"]   = df["close"].shift(1).fillna(df["close"].iloc[0])
+    df["high"]   = df[["open","close"]].max(axis=1) + noise
+    df["low"]    = df[["open","close"]].min(axis=1) - noise
+    df["volume"] = np.random.randint(150, 3000, n_bars)
+    return df.set_index("time")
+
+
+@st.cache_data(ttl=60)  # Cache 60 giây – tránh spam API
+def fetch_ohlcv(symbol: str, tf_minutes: int, n_bars: int = 300):
     """
-    Hàm lấy dữ liệu OHLCV thật của VN30F1M
-    
-    Parameters:
-    - tf_minutes: Khung thời gian (chuỗi: '1', '3', '5', '15', '30', '1D')
-    - n_days: Số ngày lịch sử muốn lấy lùi về trước
+    Lấy dữ liệu OHLCV thực của hợp đồng tương lai VN30 qua vnstock3 (nguồn VCI).
+    Tự động fallback về dữ liệu mô phỏng nếu API lỗi hoặc ngoài giờ giao dịch.
+
+    Giờ giao dịch VN30F: 9:00–11:30 và 13:00–14:45 (T2–T6).
     """
-    # 1. Xác định khoảng thời gian cần lấy dữ liệu
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=n_days)
-    
-    # Format ngày theo chuẩn YYYY-MM-DD
-    start_str = start_date.strftime('%Y-%m-%d')
-    end_str = end_date.strftime('%Y-%m-%d')
-    
-    print(f"Đang tải dữ liệu VN30F1M từ {start_str} đến {end_str} (Khung {tf_minutes} phút)...")
-    
+    # Map timeframe (phút) sang interval vnstock3
+    INTERVAL_MAP = {1: "1m", 3: "3m", 5: "5m", 15: "15m", 30: "30m", 60: "1H"}
+    interval = INTERVAL_MAP.get(tf_minutes, "1m")
+
+    # Tính khoảng ngày cần lấy để đủ n_bars
+    # VN30F giao dịch ~285 phút/ngày → số bar/ngày ≈ 285 / tf_minutes
+    bars_per_day = max(1, 285 // tf_minutes)
+    days_needed  = max(5, (n_bars // bars_per_day) + 4)
+    end_date   = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=days_needed)).strftime("%Y-%m-%d")
+
     try:
-        # 2. Gọi API vnstock để lấy dữ liệu phái sinh
-        # Lưu ý: type='derivative' để chỉ định đây là hợp đồng phái sinh
-        df = stock_historical_data(
-            symbol='VN30F1M', 
-            start_date=start_str, 
-            end_date=end_str, 
-            resolution=str(tf_minutes), 
-            type='derivative' 
+        from vnstock3 import Vnstock  # pip install vnstock3
+
+        stock = Vnstock().stock(symbol=symbol, source="VCI")
+        df = stock.quote.history(start=start_date, end=end_date, interval=interval)
+
+        if df is None or df.empty:
+            raise ValueError("API trả về dữ liệu rỗng")
+
+        # ── Chuẩn hóa tên cột ──
+        col_map = {}
+        for col in df.columns:
+            cl = col.lower().strip()
+            if cl in ("time", "date", "datetime", "tradingdate"):
+                col_map[col] = "time"
+            elif cl in ("open", "o"):
+                col_map[col] = "open"
+            elif cl in ("high", "h"):
+                col_map[col] = "high"
+            elif cl in ("low", "l"):
+                col_map[col] = "low"
+            elif cl in ("close", "c"):
+                col_map[col] = "close"
+            elif cl in ("volume", "vol", "v", "matchedvol"):
+                col_map[col] = "volume"
+        df = df.rename(columns=col_map)
+
+        # ── Set DatetimeIndex ──
+        if "time" in df.columns:
+            df["time"] = pd.to_datetime(df["time"])
+            df = df.set_index("time")
+        elif not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+
+        # ── Giữ đúng các cột cần thiết ──
+        needed = [c for c in ("open", "high", "low", "close", "volume") if c in df.columns]
+        df = df[needed].dropna()
+        df = df.sort_index()
+
+        if len(df) < 10:
+            raise ValueError(f"Chỉ lấy được {len(df)} bars – có thể ngoài giờ giao dịch")
+
+        return df.tail(n_bars)
+
+    except Exception as exc:
+        # Hiển thị cảnh báo nhỏ ở sidebar, không crash app
+        st.sidebar.warning(
+            f"⚠️ **Lấy dữ liệu thực thất bại:**\n\n"
+            f"`{str(exc)[:120]}`\n\n"
+            f"→ Đang dùng **dữ liệu mô phỏng** thay thế."
         )
-        
-        if df.empty:
-            print("Không có dữ liệu trả về. Kiểm tra lại ngày giờ (có thể rơi vào cuối tuần/ngày lễ).")
-            return df
-            
-        # 3. Chuẩn hóa lại DataFrame cho giống định dạng hàm cũ của bạn
-        # vnstock thường trả về các cột: time, open, high, low, close, volume
-        # Đảm bảo cột time là kiểu datetime
-        df['time'] = pd.to_datetime(df['time'])
-        
-        # Sắp xếp lại thời gian tăng dần và set index
-        df = df.sort_values('time')
-        df = df.set_index("time")
-        
-        # Chỉ giữ lại các cột OHLCV cơ bản
-        df = df[['open', 'high', 'low', 'close', 'volume']]
-        
-        return df
-        
-    except Exception as e:
-        print(f"Lỗi khi lấy dữ liệu: {e}")
-        return None
-
-# --- CÁCH SỬ DỤNG ---
-if __name__ == "__main__":
-    # Lấy dữ liệu khung 1 phút trong 2 ngày gần nhất
-    df_vn30f1m = get_real_ohlcv(tf_minutes='1', n_days=2)
-    
-    if df_vn30f1m is not None and not df_vn30f1m.empty:
-        print("\n5 nến gần nhất (Hiện tại):")
-        print(df_vn30f1m.tail(5))
-
+        return _simulate_ohlcv(tf_minutes, n_bars, seed=random.randint(0, 9999))
 
 
 # ══════════════════════════════════════════════════════
@@ -670,7 +699,7 @@ with st.sidebar:
         st.session_state.signal_history = []; st.session_state.prev_sig_keys = set(); st.rerun()
     if col_clr2.button("🗑️ Xóa lệnh", use_container_width=True):
         st.session_state.trade_history = []; st.rerun()
-    st.markdown('<div style="font-size:10px;color:#192138;font-family:JetBrains Mono,monospace;margin-top:6px">⚠️ Dữ liệu mô phỏng<br>Kết nối API broker để dùng thực</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:10px;color:#192138;font-family:JetBrains Mono,monospace;margin-top:6px">📡 Dữ liệu thực từ VCI<br>Fallback mô phỏng nếu ngoài giờ giao dịch</div>', unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════
@@ -685,8 +714,8 @@ if auto_refresh:
 # ══════════════════════════════════════════════════════
 # DATA + SIGNALS
 # ══════════════════════════════════════════════════════
-df1 = add_indicators(generate_ohlcv(1, 300, st.session_state.seed))
-df5 = add_indicators(generate_ohlcv(5, 200, st.session_state.seed))
+df1 = add_indicators(fetch_ohlcv(symbol, 1, 300))
+df5 = add_indicators(fetch_ohlcv(symbol, 5, 200))
 
 current_price = float(df1["close"].iloc[-1])
 prev_close    = float(df1["close"].iloc[-2])
@@ -847,7 +876,7 @@ with st.expander("📘 HƯỚNG DẪN ĐỌC TÍN HIỆU & CHIẾN LƯỢC"):
 # ══════════════════════════════════════════════════════
 st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 fl, fr = st.columns([4,1])
-fl.markdown(f'<div style="font-size:10px;color:#192138;font-family:JetBrains Mono,monospace">VN30F Terminal v2 · Mô phỏng · {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}</div>', unsafe_allow_html=True)
+fl.markdown(f'<div style="font-size:10px;color:#192138;font-family:JetBrains Mono,monospace">VN30F Terminal v2 · Dữ liệu thực VCI · {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}</div>', unsafe_allow_html=True)
 if auto_refresh:
     rem = max(0, refresh_sec-(datetime.now()-st.session_state.last_refresh).seconds)
     fr.markdown(f'<div style="font-size:10px;color:#38bdf8;font-family:JetBrains Mono,monospace;text-align:right">🔄 {rem}s</div>', unsafe_allow_html=True)
