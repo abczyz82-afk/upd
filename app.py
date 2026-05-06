@@ -79,25 +79,8 @@ for k, v in defaults.items():
 # ══════════════════════════════════════════════════════
 # DATA GENERATION
 # ══════════════════════════════════════════════════════
-def generate_ohlcv(tf_minutes, n_bars=300, seed=42):
-    np.random.seed(seed + tf_minutes * 7)
-    now = datetime.now().replace(second=0, microsecond=0)
-    now -= timedelta(minutes=now.minute % tf_minutes)
-    times = [now - timedelta(minutes=tf_minutes * i) for i in range(n_bars)][::-1]
-    prices = [1280.0]
-    for i in range(1, n_bars):
-        phase = (i // 40) % 3
-        drift = 0.18 if phase == 0 else (-0.14 if phase == 2 else 0.0)
-        vol   = 0.32 if phase == 1 else 0.58
-        prices.append(max(prices[-1] + drift + np.random.normal(0, vol), 100))
-    df = pd.DataFrame({"time": times, "close": prices})
-    noise = np.abs(np.random.normal(0, 0.28, n_bars)) + 0.08
-    df["open"]   = df["close"].shift(1).fillna(df["close"].iloc[0])
-    df["high"]   = df[["open","close"]].max(axis=1) + noise
-    df["low"]    = df[["open","close"]].min(axis=1) - noise
-    df["volume"] = np.random.randint(150, 3000, n_bars)
-    return df.set_index("time")
- 
+df = pd.read_csv("vn30f_1min.csv", parse_dates=["time"], index_col="time")
+
 
 
 # ══════════════════════════════════════════════════════
