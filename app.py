@@ -836,7 +836,8 @@ with st.sidebar:
     st.markdown('<div style="font-family:JetBrains Mono,monospace;font-size:16px;font-weight:700;color:#38bdf8;padding:6px 0 14px">⚡ VN30F TERMINAL</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sec-hdr">⚙️ CÀI ĐẶT</div>', unsafe_allow_html=True)
-    symbol       = st.selectbox("Hợp đồng", ["VN30F2506","VN30F2509","VN30F2512"])
+    symbol       = "VN30F1M"
+    st.markdown('<div style="background:#0f1626;border:1px solid #192138;border-radius:6px;padding:8px 12px;font-family:JetBrains Mono,monospace;font-size:12px;color:#38bdf8;font-weight:700">📌 VN30F1M</div>' , unsafe_allow_html=True)
     auto_refresh = st.toggle("🔄 Tự động cập nhật", value=True)
     refresh_sec  = st.slider("Chu kỳ (giây)", 10, 120, 30) if auto_refresh else 30
 
@@ -989,52 +990,89 @@ st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 chart_col, right_col = st.columns([3.1, 1.1])
 
 with chart_col:
-    tab_tv, tab1m, tab5m = st.tabs(["🌐 TradingView Live", "📊 Biểu đồ 1 Phút", "📊 Biểu đồ 5 Phút"])
-    with tab_tv:
-        tv_res_map = {"1P": "1", "5P": "5", "15P": "15", "30P": "30", "1H": "60"}
-        tv_res = st.selectbox("Khung thời gian TradingView", ["1P","5P","15P","30P","1H"],
-                               index=0, key="tv_res")
-        res_val = tv_res_map.get(tv_res, "1")
-        st.components.v1.html(f"""
-        <!-- TradingView Widget BEGIN -->
-        <div class="tradingview-widget-container" style="height:520px;width:100%">
-          <div id="tradingview_vn30f" style="height:100%;width:100%"></div>
-          <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-          <script type="text/javascript">
-          new TradingView.widget({{
-            "autosize": true,
-            "symbol": "HNX:VN301!",
-            "interval": "{res_val}",
-            "timezone": "Asia/Ho_Chi_Minh",
-            "theme": "dark",
-            "style": "1",
-            "locale": "vi_VN",
-            "toolbar_bg": "#080c18",
-            "enable_publishing": false,
-            "hide_top_toolbar": false,
-            "hide_legend": false,
-            "save_image": false,
-            "container_id": "tradingview_vn30f",
-            "studies": [
-              "MAExp@tv-basicstudies",
-              "MACD@tv-basicstudies",
-              "RSI@tv-basicstudies"
-            ],
-            "show_popup_button": false,
-            "popup_width": "1000",
-            "popup_height": "650"
-          }});
-          </script>
+    tab1m, tab5m = st.tabs(["📊 Biểu đồ 1 Phút", "📊 Biểu đồ 5 Phút"])
+
+    def build_lwc(df_src, label, tf_min):
+        """Render Lightweight Charts (open-source, không cần login) với data Python."""
+        rows = df_src.dropna(subset=["open","high","low","close"]).iloc[-200:]
+        candles = []
+        for ts, row in rows.iterrows():
+            t = int(ts.timestamp())
+            candles.append({"time": t, "open": round(float(row["open"]),2),
+                            "high": round(float(row["high"]),2),
+                            "low": round(float(row["low"]),2),
+                            "close": round(float(row["close"]),2)})
+        vols = []
+        for ts, row in rows.iterrows():
+            t = int(ts.timestamp())
+            color = "rgba(0,230,118,0.5)" if float(row["close"]) >= float(row["open"]) else "rgba(255,82,82,0.5)"
+            vols.append({"time": t, "value": int(row["volume"]), "color": color})
+        ema9_data  = [{"time": int(ts.timestamp()), "value": round(float(v),2)}
+                      for ts, v in rows["ema9"].dropna().items()]
+        ema21_data = [{"time": int(ts.timestamp()), "value": round(float(v),2)}
+                      for ts, v in rows["ema21"].dropna().items()]
+        ema50_data = [{"time": int(ts.timestamp()), "value": round(float(v),2)}
+                      for ts, v in rows["ema50"].dropna().items()]
+        import json as _json
+        c_js = _json.dumps(candles)
+        v_js = _json.dumps(vols)
+        e9_js = _json.dumps(ema9_data)
+        e21_js = _json.dumps(ema21_data)
+        e50_js = _json.dumps(ema50_data)
+        last_p = candles[-1]["close"] if candles else 0
+        last_t = label
+
+        html = f"""
+        <div id="lw_chart_{tf_min}" style="position:relative;width:100%;height:480px;background:#080c18;border-radius:8px;overflow:hidden;">
+          <div style="position:absolute;top:8px;left:12px;z-index:10;font-family:JetBrains Mono,monospace;font-size:11px;color:#475569">{last_t} · <span id="lw_price_{tf_min}" style="color:#f1f5f9;font-weight:700">{last_p:.2f}</span></div>
         </div>
-        <!-- TradingView Widget END -->
-        """, height=540, scrolling=False)
-        st.markdown('<div style="font-size:9px;color:#334155;font-family:JetBrains Mono,monospace;margin-top:4px">📡 Nguồn: TradingView / HNX · Dữ liệu thực, không qua công ty chứng khoán</div>', unsafe_allow_html=True)
+        <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+        <script>
+        (function() {{
+          var container = document.getElementById('lw_chart_{tf_min}');
+          var chart = LightweightCharts.createChart(container, {{
+            width: container.offsetWidth, height: 480,
+            layout: {{ background: {{ color: '#080c18' }}, textColor: '#64748b' }},
+            grid: {{ vertLines: {{ color: '#192138' }}, horzLines: {{ color: '#192138' }} }},
+            crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
+            rightPriceScale: {{ borderColor: '#192138' }},
+            timeScale: {{ borderColor: '#192138', timeVisible: true, secondsVisible: false }},
+          }});
+          var candleSeries = chart.addCandlestickSeries({{
+            upColor: '#00e676', downColor: '#ff5252',
+            borderUpColor: '#00e676', borderDownColor: '#ff5252',
+            wickUpColor: '#00e676', wickDownColor: '#ff5252',
+          }});
+          candleSeries.setData({c_js});
+          var ema9 = chart.addLineSeries({{ color: '#f59e0b', lineWidth: 1.5, title: 'EMA9' }});
+          ema9.setData({e9_js});
+          var ema21 = chart.addLineSeries({{ color: '#38bdf8', lineWidth: 1.5, title: 'EMA21' }});
+          ema21.setData({e21_js});
+          var ema50 = chart.addLineSeries({{ color: '#a78bfa', lineWidth: 1.5, title: 'EMA50' }});
+          ema50.setData({e50_js});
+          chart.timeScale().fitContent();
+          // Update price label on crosshair
+          chart.subscribeCrosshairMove(function(p) {{
+            if (p.seriesData && p.seriesData.get(candleSeries)) {{
+              var d = p.seriesData.get(candleSeries);
+              var el = document.getElementById('lw_price_{tf_min}');
+              if (el) el.innerText = d.close.toFixed(2);
+            }}
+          }});
+          // Resize
+          new ResizeObserver(function() {{ chart.applyOptions({{ width: container.offsetWidth }}); }}).observe(container);
+        }})();
+        </script>"""
+        st.components.v1.html(html, height=490, scrolling=False)
+
     with tab1m:
-        fig1 = build_chart(df1, f"{symbol} · 1 Phút · {datetime.now().strftime('%H:%M:%S')}", SHOW, chart_sigs1)
-        st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar":False})
+        build_lwc(df1, f"VN30F1M · 1 Phút · {datetime.now().strftime('%H:%M:%S')}", 1)
+        st.plotly_chart(build_chart(df1, f"VN30F1M · Indicators · 1P", SHOW, chart_sigs1),
+                        use_container_width=True, config={"displayModeBar":False})
     with tab5m:
-        fig5 = build_chart(df5, f"{symbol} · 5 Phút · {datetime.now().strftime('%H:%M:%S')}", SHOW, chart_sigs5)
-        st.plotly_chart(fig5, use_container_width=True, config={"displayModeBar":False})
+        build_lwc(df5, f"VN30F1M · 5 Phút · {datetime.now().strftime('%H:%M:%S')}", 5)
+        st.plotly_chart(build_chart(df5, f"VN30F1M · Indicators · 5P", SHOW, chart_sigs5),
+                        use_container_width=True, config={"displayModeBar":False})
 
 with right_col:
     st.markdown('<div class="sec-hdr">🔫 VÀO LỆNH NHANH</div>', unsafe_allow_html=True)
