@@ -135,15 +135,15 @@ def _fetch_dnse(tf_minutes: int, n_bars: int) -> pd.DataFrame:
     return _parse_tv_udf(resp.json(), n_bars)
 
 
-# ── Nguồn 2: SSI iBoard (công khai, TradingView UDF) ─────────────────────────
-def _fetch_ssi(tf_minutes: int, n_bars: int) -> pd.DataFrame:
+# ── Nguồn 2: Vietcap (công khai, TradingView UDF) ────────────────────────────
+def _fetch_vietcap(tf_minutes: int, n_bars: int) -> pd.DataFrame:
     from_ts, to_ts = _ts_range(tf_minutes, n_bars)
     res = {1: "1", 5: "5", 15: "15", 30: "30", 60: "60"}.get(tf_minutes, "1")
-    url = "https://iboard.ssi.com.vn/dchart/api/history"
+    url = "https://trading.vietcap.com.vn/api/chart/history"
     resp = _requests.get(url, params={
         "symbol": "VN30F1M", "resolution": res,
         "from": from_ts, "to": to_ts,
-    }, headers={**_HEADERS, "Referer": "https://iboard.ssi.com.vn/"}, timeout=10)
+    }, headers={**_HEADERS, "Referer": "https://trading.vietcap.com.vn/"}, timeout=10)
     resp.raise_for_status()
     return _parse_tv_udf(resp.json(), n_bars)
 
@@ -200,9 +200,9 @@ def fetch_ohlcv(symbol: str, tf_minutes: int, n_bars: int = 300):
     Thử 3 nguồn HTTP trực tiếp: DNSE → SSI → TCBS → Mô phỏng.
     """
     sources = [
-        ("DNSE/Entrade", _fetch_dnse),
-        ("SSI iBoard",   _fetch_ssi),
-        ("TCBS futures", _fetch_tcbs),
+        ("DNSE/Entrade",  _fetch_dnse),
+        ("Vietcap",       _fetch_vietcap),
+        ("TCBS futures",  _fetch_tcbs),
     ]
     errors = []
     for name, fn in sources:
@@ -697,6 +697,105 @@ def render_signal_history():
 
 
 # ══════════════════════════════════════════════════════
+# TRADE EXECUTION TABLE
+# ══════════════════════════════════════════════════════
+def render_trade_table(current_price):
+    trades = st.session_state.trade_history
+    closed = [t for t in trades if t["status"] == "CLOSED"]
+    open_  = [t for t in trades if t["status"] == "OPEN"]
+
+    if not trades:
+        st.markdown('<div style="color:#334155;font-family:JetBrains Mono,monospace;font-size:11px;padding:8px">Chưa có lệnh nào được thực hiện.</div>', unsafe_allow_html=True)
+        return
+
+    # ── Summary stats ──
+    total_pnl_pts = sum(
+        (t["exit_price"] - t["entry"]) * (1 if t["direction"] == "LONG" else -1)
+        for t in closed
+    )
+    wins  = [t for t in closed if (t["exit_price"] - t["entry"]) * (1 if t["direction"] == "LONG" else -1) > 0]
+    losses= [t for t in closed if (t["exit_price"] - t["entry"]) * (1 if t["direction"] == "LONG" else -1) <= 0]
+    win_rate = len(wins)/len(closed)*100 if closed else 0
+
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1.markdown(f'<div class="metric-box"><div class="metric-label">Tổng Lệnh</div><div class="metric-value white" style="font-size:15px">{len(trades)}</div><div style="font-size:10px;color:#475569;font-family:JetBrains Mono,monospace">Mở: {len(open_)} · Đóng: {len(closed)}</div></div>', unsafe_allow_html=True)
+    sc2.markdown(f'<div class="metric-box"><div class="metric-label">Tổng P&L (điểm)</div><div class="metric-value {"green" if total_pnl_pts>=0 else "red"}" style="font-size:15px">{total_pnl_pts:+.2f}</div><div style="font-size:10px;color:#475569;font-family:JetBrains Mono,monospace">từ {len(closed)} lệnh đóng</div></div>', unsafe_allow_html=True)
+    sc3.markdown(f'<div class="metric-box"><div class="metric-label">Win Rate</div><div class="metric-value {"green" if win_rate>=50 else "red"}" style="font-size:15px">{win_rate:.0f}%</div><div style="font-size:10px;color:#475569;font-family:JetBrains Mono,monospace">✅{len(wins)} ❌{len(losses)}</div></div>', unsafe_allow_html=True)
+    avg_win  = sum((t["exit_price"]-t["entry"])*(1 if t["direction"]=="LONG" else -1) for t in wins)/len(wins)   if wins   else 0
+    avg_loss = sum((t["exit_price"]-t["entry"])*(1 if t["direction"]=="LONG" else -1) for t in losses)/len(losses) if losses else 0
+    sc4.markdown(f'<div class="metric-box"><div class="metric-label">Avg Win / Loss</div><div class="metric-value yellow" style="font-size:13px">{avg_win:+.2f} / {avg_loss:+.2f}</div><div style="font-size:10px;color:#475569;font-family:JetBrains Mono,monospace">điểm mỗi lệnh</div></div>', unsafe_allow_html=True)
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    # ── Table header ──
+    st.markdown("""
+    <div style="display:grid;grid-template-columns:40px 60px 70px 70px 70px 70px 80px 90px 80px;
+                gap:2px;padding:6px 10px;background:#0a0e1a;border:1px solid #192138;
+                border-radius:6px 6px 0 0;font-family:'JetBrains Mono',monospace;
+                font-size:9px;color:#334155;text-transform:uppercase;letter-spacing:1px;margin-top:6px">
+      <div>#</div><div>Giờ</div><div>L/S</div><div>Điểm vào</div>
+      <div>Điểm ra</div><div>TP / SL</div><div>Kết quả</div>
+      <div>±Điểm</div><div>Trạng thái</div>
+    </div>""", unsafe_allow_html=True)
+
+    # ── Table rows ──
+    for t in trades:
+        dc   = "#00e676" if t["direction"] == "LONG" else "#ff5252"
+        is_open = t["status"] == "OPEN"
+
+        if is_open:
+            exit_pt   = current_price
+            pts       = (current_price - t["entry"]) * (1 if t["direction"] == "LONG" else -1)
+            exit_str  = f'{current_price:.2f} <span style="color:#ffd600">(LV)</span>'
+            result_lbl= "MỞ"
+            result_col= "#ffd600"
+        else:
+            exit_pt   = t.get("exit_price", t["entry"])
+            pts       = (exit_pt - t["entry"]) * (1 if t["direction"] == "LONG" else -1)
+            exit_str  = f'{exit_pt:.2f}'
+            if pts > 0:
+                result_lbl = "CHỐT LỜI"
+                result_col = "#00e676"
+            else:
+                result_lbl = "CẮT LỖ"
+                result_col = "#ff5252"
+
+        pts_col = "#00e676" if pts >= 0 else "#ff5252"
+        tp_str  = f'{t["tp"]:.2f}'
+        sl_str  = f'{t["sl"]:.2f}'
+
+        # Check if exit was at TP or SL
+        if not is_open:
+            tp_reached = abs(exit_pt - t["tp"]) < 0.15
+            sl_reached = abs(exit_pt - t["sl"]) < 0.15
+            tpsl_str = f'<span style="color:#00e676">{tp_str}</span> / <span style="color:#ff5252">{sl_str}</span>'
+            if tp_reached: tpsl_str += ' <span style="color:#00e676">✓TP</span>'
+            if sl_reached: tpsl_str += ' <span style="color:#ff5252">✓SL</span>'
+        else:
+            tpsl_str = f'<span style="color:#00e676">{tp_str}</span> / <span style="color:#ff5252">{sl_str}</span>'
+
+        row_bg = "#0a1f12" if t["direction"] == "LONG" else "#1f0a0a"
+
+        st.markdown(f"""
+        <div style="display:grid;grid-template-columns:40px 60px 70px 70px 70px 70px 80px 90px 80px;
+                    gap:2px;padding:7px 10px;background:{row_bg};
+                    border:1px solid #19213844;border-top:none;
+                    font-family:'JetBrains Mono',monospace;font-size:10px;align-items:center">
+          <div style="color:#64748b">#{t['id']}</div>
+          <div style="color:#475569">{t['time']}</div>
+          <div><b style="color:{dc}">{t['direction']}</b></div>
+          <div style="color:#f1f5f9"><b>{t['entry']:.2f}</b></div>
+          <div style="color:#94a3b8">{exit_str}</div>
+          <div style="font-size:9px">{tpsl_str}</div>
+          <div style="color:{result_col};font-weight:700;font-size:9px">{result_lbl}</div>
+          <div style="color:{pts_col};font-weight:700;font-size:12px">{pts:+.2f} đ</div>
+          <div style="color:{'#ffd600' if is_open else '#334155'};font-size:9px">{'● ĐANG MỞ' if is_open else f'✕ {t.get("close_time","--:--")}'}</div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown("<div style='border:1px solid #192138;border-top:none;border-radius:0 0 6px 6px;height:4px;background:#080c18'></div>", unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════
 # ██ SIDEBAR
 # ══════════════════════════════════════════════════════
 with st.sidebar:
@@ -747,7 +846,7 @@ with st.sidebar:
         st.session_state.signal_history = []; st.session_state.prev_sig_keys = set(); st.rerun()
     if col_clr2.button("🗑️ Xóa lệnh", use_container_width=True):
         st.session_state.trade_history = []; st.rerun()
-    st.markdown('<div style="font-size:10px;color:#192138;font-family:JetBrains Mono,monospace;margin-top:6px">📡 Dữ liệu thực từ VCI<br>Fallback mô phỏng nếu ngoài giờ giao dịch</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:10px;color:#192138;font-family:JetBrains Mono,monospace;margin-top:6px">📡 Nguồn: DNSE → Vietcap → TCBS<br>Fallback mô phỏng nếu ngoài giờ giao dịch</div>', unsafe_allow_html=True)
 
     # ── DEBUG: Trạng thái nguồn dữ liệu ──
     src = st.session_state.get("data_source", "...")
@@ -903,6 +1002,21 @@ with st.expander(
 
 
 # ══════════════════════════════════════════════════════
+# ██ TRADE EXECUTION TABLE (full width)
+# ══════════════════════════════════════════════════════
+st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+total_trades  = len(st.session_state.trade_history)
+closed_trades = sum(1 for t in st.session_state.trade_history if t["status"] == "CLOSED")
+open_trades   = total_trades - closed_trades
+
+with st.expander(
+    f"📋 BẢNG LỆNH ĐÃ THỰC HIỆN  ·  {total_trades} lệnh  ·  🟡 {open_trades} đang mở  ·  ✅ {closed_trades} đã đóng",
+    expanded=True
+):
+    render_trade_table(current_price)
+
+
+# ══════════════════════════════════════════════════════
 # ██ REFERENCE GUIDE
 # ══════════════════════════════════════════════════════
 with st.expander("📘 HƯỚNG DẪN ĐỌC TÍN HIỆU & CHIẾN LƯỢC"):
@@ -935,7 +1049,7 @@ with st.expander("📘 HƯỚNG DẪN ĐỌC TÍN HIỆU & CHIẾN LƯỢC"):
 # ══════════════════════════════════════════════════════
 st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 fl, fr = st.columns([4,1])
-fl.markdown(f'<div style="font-size:10px;color:#192138;font-family:JetBrains Mono,monospace">VN30F Terminal v2 · Dữ liệu thực VCI · {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}</div>', unsafe_allow_html=True)
+fl.markdown(f'<div style="font-size:10px;color:#192138;font-family:JetBrains Mono,monospace">VN30F Terminal v3 · DNSE/Vietcap/TCBS · {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}</div>', unsafe_allow_html=True)
 if auto_refresh:
     rem = max(0, refresh_sec-(datetime.now()-st.session_state.last_refresh).seconds)
     fr.markdown(f'<div style="font-size:10px;color:#38bdf8;font-family:JetBrains Mono,monospace;text-align:right">🔄 {rem}s</div>', unsafe_allow_html=True)
