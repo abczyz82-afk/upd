@@ -7,3 +7,4 @@ google-generativeai
 ipython
 beautifulsoup4
 numpy
+requests
