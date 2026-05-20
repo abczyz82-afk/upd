@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from vnstock import stock_historical_data
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
@@ -63,8 +62,8 @@ def get_clean_stock_data(symbol: str) -> pd.DataFrame | None:
     end_date = datetime.now()
     start_date = end_date - timedelta(days=150)  # Extra room for Ichimoku (needs 52 bars)
 
-    # ── Luồng 1: Phái sinh VN30F1M qua DNSE API ──────────────────────────────
-    if symbol == "VN30F1M":
+    # ── Luồng 1: Phái sinh (VN30F1M, VN30F2M, ...) qua DNSE API ─────────────
+    if symbol.startswith("VN30F"):
         try:
             url = (
                 f"https://services.entrade.com.vn/chart-api/v2/ohlcs/derivative"
@@ -89,24 +88,56 @@ def get_clean_stock_data(symbol: str) -> pd.DataFrame | None:
             st.error(f"Lỗi khi kéo dữ liệu phái sinh: {e}")
             return None
 
-    # ── Luồng 2: Cổ phiếu cơ sở qua vnstock ─────────────────────────────────
+    # ── Luồng 2: Cổ phiếu cơ sở qua DNSE stock API ───────────────────────────
     str_start = start_date.strftime("%Y-%m-%d")
-    str_end = end_date.strftime("%Y-%m-%d")
+    str_end   = end_date.strftime("%Y-%m-%d")
+    try:
+        url = (
+            f"https://services.entrade.com.vn/chart-api/v2/ohlcs/stock"
+            f"?from={int(start_date.timestamp())}&to={int(end_date.timestamp())}"
+            f"&symbol={symbol}&resolution=1D"
+        )
+        resp = requests.get(url, timeout=10).json()
+        if "t" in resp and len(resp["t"]) > 0:
+            df = pd.DataFrame(
+                {
+                    "time": pd.to_datetime(resp["t"], unit="s"),
+                    "open": resp["o"],
+                    "high": resp["h"],
+                    "low": resp["l"],
+                    "close": resp["c"],
+                    "volume": resp["v"],
+                }
+            )
+            df["time"] = df["time"].dt.strftime("%Y-%m-%d")
+            return df
+    except Exception:
+        pass
 
-    for source in ["VCI", None]:
-        try:
-            kwargs = dict(symbol=symbol, start_date=str_start, end_date=str_end)
-            if source:
-                kwargs["source"] = source
-            df = stock_historical_data(**kwargs)
-            if df is not None and not df.empty:
-                df.columns = [col.lower() for col in df.columns]
-                df = df.rename(
-                    columns={"tradingdate": "time", "date": "time", "vol": "volume"}
-                )
-                return df
-        except Exception:
-            continue
+    # ── Luồng 3: Fallback — SSI iBoard API ───────────────────────────────────
+    try:
+        url = (
+            f"https://iboard-query.ssi.com.vn/v2/stock/historical-price"
+            f"?symbol={symbol}&fromDate={str_start}&toDate={str_end}&offset=0&limit=200"
+        )
+        headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, headers=headers, timeout=10).json()
+        data = resp.get("data", {}).get("items", [])
+        if data:
+            df = pd.DataFrame(data)
+            df = df.rename(columns={
+                "tradingDate": "time", "openPrice": "open", "highPrice": "high",
+                "lowPrice": "low", "closePrice": "close", "totalMatchVolume": "volume",
+            })
+            for col in ["open", "high", "low", "close", "volume"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df.sort_values("time").reset_index(drop=True)
+            return df[["time", "open", "high", "low", "close", "volume"]]
+    except Exception:
+        pass
+
+    st.error(f"Không thể lấy dữ liệu cho mã **{symbol}** từ bất kỳ nguồn nào.")
     return None
 
 
