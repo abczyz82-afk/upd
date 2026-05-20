@@ -123,28 +123,4 @@ if st.button("Lấy Dữ Liệu & Khởi Chạy AI Analysis"):
                 3. Đưa ra khuyến nghị hành động quyết đoán (Mua/Bán/Nắm giữ) kèm theo MỨC GIÁ MUA HỢP LÝ (vùng hỗ trợ cứng) và MỨC GIÁ BÁN MỤC TIÊU (vùng kháng cự gần) bằng các con số cụ thể.
                 """
                 
-                with st.spinner("AI đang tính toán điểm hội tụ chỉ báo và lập chiến lược..."):
-                    try:
-                        # Đổi đích nhắm chắc chắn 100% tới gemini-pro
-                        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
-                        headers = {'Content-Type': 'application/json'}
-                        data = {
-                            "contents": [{"parts": [{"text": prompt}]}]
-                        }
-                        
-                        response = requests.post(url, headers=headers, data=json.dumps(data))
-                        
-                        if response.status_code == 200:
-                            result = response.json()
-                            ai_text = result['candidates'][0]['content']['parts'][0]['text']
-                            st.info(ai_text)
-                        else:
-                            # In trực tiếp nội dung lỗi từ Google để dễ dàng biết sai ở đâu (nếu có)
-                            error_details = response.json().get('error', {}).get('message', 'Không rõ')
-                            st.error(f"Lỗi API từ Google: {error_details} (Mã lỗi: {response.status_code})")
-                    except Exception as e:
-                        st.error(f"Lỗi mạng khi gọi AI: {e}")
-            else:
-                st.info("💡 Vui lòng nhập Gemini API Key ở thanh bên trái để nhận báo cáo khuyến nghị điểm mua/bán tự động từ Trợ lý AI.")
-        else:
-            st.error(f"Không thể tải dữ liệu cho mã {ticker}. Hệ thống tự động kiểm tra lại cổng kết nối, vui lòng bấm thử lại.")
+                t nối, vui lòng bấm thử lại.")
