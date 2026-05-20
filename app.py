@@ -210,9 +210,13 @@ def call_claude(api_key: str, prompt: str) -> str:
         json=body,
         timeout=90,
     )
+    
+    # ← THÊM ĐOẠN NÀY để debug
+    if not resp.ok:
+        st.error(f"Chi tiết lỗi: {resp.status_code} — {resp.text}")
+    
     resp.raise_for_status()
     return resp.json()["content"][0]["text"]
-
 
 def call_gemini(api_key: str, prompt: str) -> str:
     from google import genai  # type: ignore
