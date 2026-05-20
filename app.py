@@ -27,17 +27,26 @@ st.markdown("Hệ thống kết nối nguồn dữ liệu chuẩn Việt Nam qua
 
 ticker = st.text_input("🔍 Nhập mã chứng khoán (Cổ phiếu hoặc VN30F1M):", "SSI").upper().strip()
 
-# Hàm lấy dữ liệu lịch sử sạch từ nguồn VCI để tránh lỗi IP Cloud
+# Hàm lấy dữ liệu lịch sử thông minh đa nguồn tránh lỗi chặn cổng kết nối
 @st.cache_data(ttl=60)
 def get_clean_stock_data(symbol):
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
+    
+    # Thử nguồn 1: VCI 
     try:
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
-        
-        # Sử dụng hàm gốc của phiên bản vnstock 0.2.8.2 với source='VCI' đầy đủ độ ổn định
         df = stock_historical_data(symbol=symbol, start_date=start_date, end_date=end_date, source='VCI')
-        return df
-    except Exception as e:
+        if df is not None and not df.empty:
+            return df
+    except:
+        pass
+
+    # Thử nguồn 2: Nguồn mặc định hệ thống tự điều phối (DNSE/Cafef) nếu VCI lỗi cấu trúc
+    try:
+        df = stock_historical_data(symbol=symbol, start_date=start_date, end_date=end_date)
+        if df is not None and not df.empty:
+            return df
+    except:
         return None
 
 if st.button("Lấy Dữ Liệu & Khởi Chạy AI Analysis"):
@@ -45,8 +54,24 @@ if st.button("Lấy Dữ Liệu & Khởi Chạy AI Analysis"):
         df = get_clean_stock_data(ticker)
         
         if df is not None and not df.empty:
-            # Đổi tên cột chuẩn hóa để tính toán chỉ báo
-            df = df.rename(columns={'TradingDate': 'time', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
+            # Tự động viết thường toàn bộ tên cột để đồng bộ hóa đa nguồn
+            df.columns = [col.lower() for col in df.columns]
+            
+            # Định nghĩa bảng ánh xạ đổi tên cột chuẩn hóa để tính toán chỉ báo
+            rename_dict = {
+                'tradingdate': 'time', 'date': 'time',
+                'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close', 
+                'volume': 'volume', 'vol': 'volume'
+            }
+            df = df.rename(columns=rename_dict)
+            
+            # Ép kiểu dữ liệu các cột kỹ thuật về dạng số float để tránh lỗi thư viện 'ta'
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Loại bỏ các hàng trống (NaN) nếu có
+            df = df.dropna(subset=['close'])
             df['time'] = pd.to_datetime(df['time']).dt.strftime('%Y-%m-%d')
             
             # --- 3. TÍNH TOÁN CÁC CHỈ BÁO KỸ THUẬT (Thư viện 'ta') ---
