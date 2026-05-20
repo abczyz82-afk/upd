@@ -218,7 +218,7 @@ def call_gemini(api_key: str, prompt: str) -> str:
     from google import genai  # type: ignore
 
     client   = genai.Client(api_key=api_key)
-    response = client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
+    response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
     return response.text
 
 
@@ -460,7 +460,7 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.06)")
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # ── Bảng dữ liệu ─────────────────────────────────────────────────────
     st.write("**📋 Bảng dữ liệu 7 phiên gần nhất (kèm chỉ báo):**")
@@ -472,7 +472,7 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
     st.dataframe(
         df.tail(7)[show_cols].round(2),
         hide_index=True,
-        use_container_width=True,
+        width='stretch',
     )
 
     # ── Fibonacci table ───────────────────────────────────────────────────
@@ -480,7 +480,7 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
         fib_df = pd.DataFrame(
             [{"Mức Fibonacci": k, "Giá (đ)": f"{v:,.0f}"} for k, v in fib_levels.items()]
         )
-        st.dataframe(fib_df, hide_index=True, use_container_width=True)
+        st.dataframe(fib_df, hide_index=True, width='stretch')
 
     # ─────────────────────────────────────────────────────────────────────
     # AI ANALYSIS
