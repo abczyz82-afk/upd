@@ -98,12 +98,14 @@ if st.button("Lấy Dữ Liệu & Khởi Chạy AI Analysis"):
             fig.add_trace(go.Scatter(x=df['time'], y=df['BB_Low'], line=dict(color='rgba(0, 250, 0, 0.4)', width=1), name='BB Lower'))
             
             fig.update_layout(title=f"Biểu đồ kỹ thuật mã {ticker}", xaxis_rangeslider_visible=False, template="plotly_dark", height=450)
-            st.plotly_chart(fig, use_container_width=True)
+            
+            # Sửa cảnh báo use_container_width thành cú pháp mới
+            st.plotly_chart(fig, width="stretch")
             
             st.write("Bảng dữ liệu 5 phiên gần nhất tích hợp chỉ báo:")
-            st.dataframe(df.tail(5)[['time', 'open', 'high', 'low', 'close', 'volume', 'RSI', 'MACD']], hide_index=True, use_container_width=True)
+            st.dataframe(df.tail(5)[['time', 'open', 'high', 'low', 'close', 'volume', 'RSI', 'MACD']], hide_index=True, width="stretch")
             
-            # --- 5. GỌI API GEMINI TRỰC TIẾP (KHÔNG DÙNG THƯ VIỆN LỖI) ---
+            # --- 5. GỌI API GEMINI TRỰC TIẾP ---
             if api_key:
                 st.markdown("---")
                 st.subheader(f"🤖 Báo Cáo Khuyến Nghị Vùng Giá Từ Trợ Lý AI")
@@ -123,8 +125,8 @@ if st.button("Lấy Dữ Liệu & Khởi Chạy AI Analysis"):
                 
                 with st.spinner("AI đang tính toán điểm hội tụ chỉ báo và lập chiến lược..."):
                     try:
-                        # Gửi Request thẳng tới Server Google
-                        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+                        # Đổi đích nhắm chắc chắn 100% tới gemini-pro
+                        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
                         headers = {'Content-Type': 'application/json'}
                         data = {
                             "contents": [{"parts": [{"text": prompt}]}]
@@ -137,7 +139,9 @@ if st.button("Lấy Dữ Liệu & Khởi Chạy AI Analysis"):
                             ai_text = result['candidates'][0]['content']['parts'][0]['text']
                             st.info(ai_text)
                         else:
-                            st.error(f"Lỗi truy xuất AI. Vui lòng kiểm tra lại API Key. (Mã lỗi: {response.status_code})")
+                            # In trực tiếp nội dung lỗi từ Google để dễ dàng biết sai ở đâu (nếu có)
+                            error_details = response.json().get('error', {}).get('message', 'Không rõ')
+                            st.error(f"Lỗi API từ Google: {error_details} (Mã lỗi: {response.status_code})")
                     except Exception as e:
                         st.error(f"Lỗi mạng khi gọi AI: {e}")
             else:
