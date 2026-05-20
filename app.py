@@ -123,4 +123,37 @@ if st.button("Lấy Dữ Liệu & Khởi Chạy AI Analysis"):
                 3. Đưa ra khuyến nghị hành động quyết đoán (Mua/Bán/Nắm giữ) kèm theo MỨC GIÁ MUA HỢP LÝ (vùng hỗ trợ cứng) và MỨC GIÁ BÁN MỤC TIÊU (vùng kháng cự gần) bằng các con số cụ thể.
                 """
                 
-                t nối, vui lòng bấm thử lại.")
+with st.spinner("AI đang tính toán điểm hội tụ chỉ báo và lập chiến lược..."):
+                    # Danh sách các model từ mới nhất đến các bản dự phòng
+                    models_to_try = [
+                        "gemini-1.5-flash-latest",
+                        "gemini-1.5-pro-latest",
+                        "gemini-2.0-flash"
+                    ]
+                    
+                    success = False
+                    error_msg = ""
+                    
+                    for model_name in models_to_try:
+                        try:
+                            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+                            headers = {'Content-Type': 'application/json'}
+                            data = {
+                                "contents": [{"parts": [{"text": prompt}]}]
+                            }
+                            
+                            response = requests.post(url, headers=headers, data=json.dumps(data))
+                            
+                            if response.status_code == 200:
+                                result = response.json()
+                                ai_text = result['candidates'][0]['content']['parts'][0]['text']
+                                st.info(f"*(Phân tích bởi model: {model_name})*\n\n" + ai_text)
+                                success = True
+                                break # Thành công thì thoát vòng lặp ngay
+                            else:
+                                error_msg = response.json().get('error', {}).get('message', 'Không rõ')
+                        except Exception as e:
+                            error_msg = str(e)
+                            
+                    if not success:
+                        st.error(f"Đã thử toàn bộ danh sách model nhưng AI của Google vẫn từ chối kết nối. Lỗi cuối cùng: {error_msg}")
