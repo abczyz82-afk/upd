@@ -218,7 +218,7 @@ def call_gemini(api_key: str, prompt: str) -> str:
     from google import genai  # type: ignore
     import time
 
-    MODELS = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro-latest"]
+    MODELS = ["gemini-2.5-flash-preview-05-20", "gemini-2.0-flash", "gemini-1.5-flash-latest"]
     client = genai.Client(api_key=api_key)
 
     for model in MODELS:
