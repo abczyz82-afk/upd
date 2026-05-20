@@ -216,10 +216,36 @@ def call_claude(api_key: str, prompt: str) -> str:
 
 def call_gemini(api_key: str, prompt: str) -> str:
     from google import genai  # type: ignore
+    import time
 
-    client   = genai.Client(api_key=api_key)
-    response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
-    return response.text
+    MODELS = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro-latest"]
+    client = genai.Client(api_key=api_key)
+
+    for model in MODELS:
+        for attempt in range(2):  # retry once per model
+            try:
+                response = client.models.generate_content(model=model, contents=prompt)
+                return response.text
+            except Exception as e:
+                err_str = str(e)
+                if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
+                    if attempt == 0:
+                        time.sleep(5)  # wait 5s then retry same model
+                        continue
+                    else:
+                        break  # try next model
+                elif "NOT_FOUND" in err_str or "404" in err_str:
+                    break  # model unavailable, try next
+                else:
+                    raise  # other errors: propagate immediately
+
+    raise RuntimeError(
+        "⚠️ Đã vượt quá quota miễn phí Gemini.\n\n"
+        "**Cách khắc phục:**\n"
+        "- Nạp billing tại https://ai.dev/billing để dùng tiếp\n"
+        "- Hoặc chờ ~1 phút rồi thử lại (rate limit theo phút)\n"
+        "- Hoặc chuyển sang **Claude (Anthropic)** ở sidebar"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -560,8 +586,25 @@ Tóm tắt nhanh tín hiệu chỉ báo hiện tại:
                     result = call_gemini(api_key, prompt)
                 st.markdown(result)
             except Exception as e:
-                st.error(f"❌ Lỗi gọi AI: {e}")
-                st.info(
-                    "💡 Gợi ý: Kiểm tra lại API Key và đảm bảo bạn có quyền truy cập model. "
-                    "Claude dùng key từ console.anthropic.com, Gemini dùng key từ aistudio.google.com."
-                )
+                err_str = str(e)
+                if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str or "quota" in err_str.lower():
+                    st.error("❌ Hết quota Gemini API (429 RESOURCE_EXHAUSTED)")
+                    st.warning(
+                        "**Nguyên nhân:** Tài khoản Google AI đang dùng gói miễn phí và đã hết hạn mức.\n\n"
+                        "**Cách khắc phục:**\n"
+                        "- 🔄 Chờ ~1 phút rồi thử lại (nếu hết giới hạn theo phút)\n"
+                        "- 💳 Nạp billing tại https://ai.dev/billing để tăng hạn mức\n"
+                        "- 🔀 Chuyển sang **Claude (Anthropic)** ở sidebar trái"
+                    )
+                elif "NOT_FOUND" in err_str or "404" in err_str:
+                    st.error("❌ Model AI không tìm thấy (404 NOT_FOUND)")
+                    st.info("💡 Thử chọn nhà cung cấp khác hoặc kiểm tra lại API Key.")
+                elif "401" in err_str or "UNAUTHENTICATED" in err_str:
+                    st.error("❌ API Key không hợp lệ hoặc hết hạn.")
+                    st.info("💡 Claude: lấy key tại console.anthropic.com | Gemini: lấy key tại aistudio.google.com")
+                else:
+                    st.error(f"❌ Lỗi gọi AI: {e}")
+                    st.info(
+                        "💡 Gợi ý: Kiểm tra lại API Key và đảm bảo bạn có quyền truy cập model. "
+                        "Claude dùng key từ console.anthropic.com, Gemini dùng key từ aistudio.google.com."
+                    )
