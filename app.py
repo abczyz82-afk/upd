@@ -131,7 +131,7 @@ if st.button("Lấy Dữ Liệu & Khởi Chạy AI Analysis"):
             st.dataframe(df.tail(5)[['time', 'open', 'high', 'low', 'close', 'volume', 'RSI', 'MACD']], hide_index=True, width="stretch")
             
             # --- 5. GỌI API GEMINI TRỰC TIẾP TỰ ĐỘNG CHỌN MODEL ---
-         with st.spinner("AI đang tính toán điểm hội tụ chỉ báo và lập chiến lược..."):
+with st.spinner("AI đang tính toán điểm hội tụ chỉ báo và lập chiến lược..."):
                     try:
                         # Sử dụng chuẩn SDK mới nhất của Google
                         from google import genai
