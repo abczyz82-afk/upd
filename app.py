@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
 from vnstock import stock_historical_data
-import google.generativeai as genai
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import requests
+import json
 
 # Nhập các chỉ báo kỹ thuật từ thư viện 'ta'
 from ta.momentum import RSIIndicator
@@ -12,13 +13,10 @@ from ta.trend import MACD
 
 st.set_page_config(layout="wide", page_title="AI Trading Dashboard")
 
-# --- 1. CẤU HÌNH TRỢ LÝ AI GEMINI ---
+# --- 1. CẤU HÌNH TRỢ LÝ AI GEMINI (DÙNG REST API TRỰC TIẾP) ---
 st.sidebar.header("⚙️ Cấu hình Hệ thống")
 api_key = st.sidebar.text_input("Nhập Gemini API Key của bạn:", type="password")
-if api_key:
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-pro')
-else:
+if not api_key:
     st.sidebar.warning("⚠️ Vui lòng nhập API Key để bật tính năng Trợ lý AI.")
 
 # --- 2. GIAO DIỆN CHÍNH & TÌM KIẾM MÃ ---
@@ -27,13 +25,12 @@ st.markdown("Hệ thống kết nối nguồn dữ liệu chuẩn Việt Nam qua
 
 ticker = st.text_input("🔍 Nhập mã chứng khoán (Cổ phiếu hoặc VN30F1M):", "SSI").upper().strip()
 
-# Hàm lấy dữ liệu lịch sử thông minh đa nguồn tránh lỗi chặn cổng kết nối
+# Hàm lấy dữ liệu lịch sử thông minh đa nguồn
 @st.cache_data(ttl=60)
 def get_clean_stock_data(symbol):
     end_date = datetime.now().strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
     
-    # Thử nguồn 1: VCI 
     try:
         df = stock_historical_data(symbol=symbol, start_date=start_date, end_date=end_date, source='VCI')
         if df is not None and not df.empty:
@@ -41,7 +38,6 @@ def get_clean_stock_data(symbol):
     except:
         pass
 
-    # Thử nguồn 2: Nguồn mặc định hệ thống tự điều phối (DNSE/Cafef) nếu VCI lỗi cấu trúc
     try:
         df = stock_historical_data(symbol=symbol, start_date=start_date, end_date=end_date)
         if df is not None and not df.empty:
@@ -54,10 +50,8 @@ if st.button("Lấy Dữ Liệu & Khởi Chạy AI Analysis"):
         df = get_clean_stock_data(ticker)
         
         if df is not None and not df.empty:
-            # Tự động viết thường toàn bộ tên cột để đồng bộ hóa đa nguồn
             df.columns = [col.lower() for col in df.columns]
             
-            # Định nghĩa bảng ánh xạ đổi tên cột chuẩn hóa để tính toán chỉ báo
             rename_dict = {
                 'tradingdate': 'time', 'date': 'time',
                 'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close', 
@@ -65,32 +59,26 @@ if st.button("Lấy Dữ Liệu & Khởi Chạy AI Analysis"):
             }
             df = df.rename(columns=rename_dict)
             
-            # Ép kiểu dữ liệu các cột kỹ thuật về dạng số float để tránh lỗi thư viện 'ta'
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             
-            # Loại bỏ các hàng trống (NaN) nếu có
             df = df.dropna(subset=['close'])
             df['time'] = pd.to_datetime(df['time']).dt.strftime('%Y-%m-%d')
             
-            # --- 3. TÍNH TOÁN CÁC CHỈ BÁO KỸ THUẬT (Thư viện 'ta') ---
-            # Tính RSI (14)
+            # --- 3. TÍNH TOÁN CHỈ BÁO KỸ THUẬT ---
             rsi_series = RSIIndicator(close=df['close'], window=14).rsi()
             df['RSI'] = rsi_series
             
-            # Tính Bollinger Bands
             bb = BollingerBands(close=df['close'], window=20, window_dev=2)
             df['BB_High'] = bb.bollinger_hband()
             df['BB_Low'] = bb.bollinger_lband()
             
-            # Tính MACD
             macd_obj = MACD(close=df['close'])
             df['MACD'] = macd_obj.macd()
             df['MACD_Signal'] = macd_obj.macd_signal()
             df['MACD_Diff'] = macd_obj.macd_diff()
             
-            # Lấy thông số phiên cuối cùng
             latest = df.iloc[-1]
             prev = df.iloc[-2]
             price_change = latest['close'] - prev['close']
@@ -103,27 +91,23 @@ if st.button("Lấy Dữ Liệu & Khởi Chạy AI Analysis"):
             m3.metric("Bollinger Band Trên", f"{latest['BB_High']:,.0f} đ")
             m4.metric("Bollinger Band Dưới", f"{latest['BB_Low']:,.0f} đ")
             
-            # --- 4. VẼ BIỂU ĐỒ NẾN KỸ THUẬT (Thư viện 'plotly') ---
+            # --- 4. VẼ BIỂU ĐỒ NẾN ---
             fig = go.Figure()
-            # Vẽ nến Candlestick
             fig.add_trace(go.Candlestick(x=df['time'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Giá nến'))
-            # Vẽ đường Bollinger Bands
             fig.add_trace(go.Scatter(x=df['time'], y=df['BB_High'], line=dict(color='rgba(250, 0, 0, 0.4)', width=1), name='BB Upper'))
             fig.add_trace(go.Scatter(x=df['time'], y=df['BB_Low'], line=dict(color='rgba(0, 250, 0, 0.4)', width=1), name='BB Lower'))
             
             fig.update_layout(title=f"Biểu đồ kỹ thuật mã {ticker}", xaxis_rangeslider_visible=False, template="plotly_dark", height=450)
             st.plotly_chart(fig, use_container_width=True)
             
-            # Hiển thị bảng dữ liệu thô kết hợp chỉ báo
             st.write("Bảng dữ liệu 5 phiên gần nhất tích hợp chỉ báo:")
             st.dataframe(df.tail(5)[['time', 'open', 'high', 'low', 'close', 'volume', 'RSI', 'MACD']], hide_index=True, use_container_width=True)
             
-            # --- 5. TÍCH HỢP ĐẨY DỮ LIỆU ĐA CHỈ BÁO VÀO AI GEMINI ---
+            # --- 5. GỌI API GEMINI TRỰC TIẾP (KHÔNG DÙNG THƯ VIỆN LỖI) ---
             if api_key:
                 st.markdown("---")
                 st.subheader(f"🤖 Báo Cáo Khuyến Nghị Vùng Giá Từ Trợ Lý AI")
                 
-                # Trích xuất bối cảnh giàu dữ liệu chỉ báo để AI không phán đoán bừa
                 ai_context = df.tail(7)[['time', 'close', 'volume', 'RSI', 'BB_High', 'BB_Low', 'MACD']].to_string()
                 
                 prompt = f"""
@@ -138,8 +122,24 @@ if st.button("Lấy Dữ Liệu & Khởi Chạy AI Analysis"):
                 """
                 
                 with st.spinner("AI đang tính toán điểm hội tụ chỉ báo và lập chiến lược..."):
-                    response = model.generate_content(prompt)
-                    st.info(response.text)
+                    try:
+                        # Gửi Request thẳng tới Server Google
+                        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+                        headers = {'Content-Type': 'application/json'}
+                        data = {
+                            "contents": [{"parts": [{"text": prompt}]}]
+                        }
+                        
+                        response = requests.post(url, headers=headers, data=json.dumps(data))
+                        
+                        if response.status_code == 200:
+                            result = response.json()
+                            ai_text = result['candidates'][0]['content']['parts'][0]['text']
+                            st.info(ai_text)
+                        else:
+                            st.error(f"Lỗi truy xuất AI. Vui lòng kiểm tra lại API Key. (Mã lỗi: {response.status_code})")
+                    except Exception as e:
+                        st.error(f"Lỗi mạng khi gọi AI: {e}")
             else:
                 st.info("💡 Vui lòng nhập Gemini API Key ở thanh bên trái để nhận báo cáo khuyến nghị điểm mua/bán tự động từ Trợ lý AI.")
         else:
