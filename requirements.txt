@@ -4,3 +4,6 @@ pandas
 vnstock==0.2.8.2
 ta
 google-generativeai
+ipython
+beautifulsoup4
+numpy
