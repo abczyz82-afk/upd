@@ -157,20 +157,56 @@ def calc_ichimoku(df: pd.DataFrame) -> tuple:
 
 
 def calc_fibonacci(df: pd.DataFrame, lookback: int = 60) -> dict:
-    """Fibonacci Retracement từ High/Low trong lookback phiên gần nhất."""
+    """
+    Fibonacci Retracement chuẩn — phát hiện Swing High/Low gần nhất trong lookback phiên.
+    Tự động xác định xu hướng (đang hồi từ đỉnh hay phục hồi từ đáy) để
+    căn chỉnh hướng tính Fib cho đúng.
+    Trả về các mức retracement + extension để dùng làm hỗ trợ/kháng cự.
+    """
     window   = df.tail(lookback)
     high_val = window["high"].max()
     low_val  = window["low"].min()
-    diff     = high_val - low_val
-    return {
-        "0.0%":   high_val,
-        "23.6%":  high_val - 0.236 * diff,
-        "38.2%":  high_val - 0.382 * diff,
-        "50.0%":  high_val - 0.500 * diff,
-        "61.8%":  high_val - 0.618 * diff,
-        "78.6%":  high_val - 0.786 * diff,
-        "100.0%": low_val,
-    }
+
+    # Xác định swing point gần nhất: High hay Low xuất hiện sau cùng?
+    high_idx_pos = window["high"].values.argmax()
+    low_idx_pos  = window["low"].values.argmin()
+
+    # Nếu đỉnh xuất hiện SAU đáy → xu hướng đang giảm từ đỉnh (Retracement từ High xuống)
+    # Nếu đáy xuất hiện SAU đỉnh → xu hướng đang phục hồi (Retracement từ Low lên)
+    is_downtrend = (high_idx_pos > low_idx_pos)
+
+    diff = high_val - low_val
+
+    if is_downtrend:
+        # Giá đang điều chỉnh từ đỉnh → tính Fib từ HIGH xuống LOW
+        # Các mức là vùng HỖ TRỢ khi giá đi xuống
+        levels = {
+            "0.0% (Đỉnh)":   high_val,
+            "23.6%":          high_val - 0.236 * diff,
+            "38.2%":          high_val - 0.382 * diff,
+            "50.0%":          high_val - 0.500 * diff,
+            "61.8% ✨":       high_val - 0.618 * diff,   # Golden Ratio — hỗ trợ mạnh nhất
+            "78.6%":          high_val - 0.786 * diff,
+            "100.0% (Đáy)":   low_val,
+        }
+    else:
+        # Giá đang phục hồi từ đáy → tính Fib từ LOW lên HIGH
+        # Các mức là vùng KHÁNG CỰ khi giá đi lên
+        levels = {
+            "0.0% (Đáy)":    low_val,
+            "23.6%":          low_val + 0.236 * diff,
+            "38.2%":          low_val + 0.382 * diff,
+            "50.0%":          low_val + 0.500 * diff,
+            "61.8% ✨":       low_val + 0.618 * diff,   # Golden Ratio — kháng cự mạnh nhất
+            "78.6%":          low_val + 0.786 * diff,
+            "100.0% (Đỉnh)":  high_val,
+        }
+
+    # Lưu metadata để các section khác dùng (không ảnh hưởng iteration)
+    levels["_high"]         = high_val
+    levels["_low"]          = low_val
+    levels["_is_downtrend"] = is_downtrend
+    return levels
 
 
 def calc_mcdx(df: pd.DataFrame) -> pd.Series:
@@ -711,30 +747,39 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
 
     # ── Fibonacci Retracement ─────────────────────────────────────────────
     fib_palette = {
-        "0.0%":   "#9E9E9E",
-        "23.6%":  "#7986CB",
-        "38.2%":  "#29B6F6",
-        "50.0%":  "#EF5350",
-        "61.8%":  "#FFA726",
-        "78.6%":  "#AB47BC",
-        "100.0%": "#9E9E9E",
+        "0.0% (Đỉnh)":   "#9E9E9E",
+        "0.0% (Đáy)":    "#9E9E9E",
+        "23.6%":          "#7986CB",
+        "38.2%":          "#29B6F6",
+        "50.0%":          "#EF5350",
+        "61.8% ✨":       "#FFA726",   # Golden Ratio
+        "78.6%":          "#AB47BC",
+        "100.0% (Đỉnh)":  "#9E9E9E",
+        "100.0% (Đáy)":   "#9E9E9E",
     }
     fib_width = {
-        "0.0%": 1, "23.6%": 1, "38.2%": 1.5,
-        "50.0%": 2.5, "61.8%": 1.5, "78.6%": 1, "100.0%": 1,
+        "0.0% (Đỉnh)": 1, "0.0% (Đáy)": 1,
+        "23.6%": 1, "38.2%": 1.5,
+        "50.0%": 2.5, "61.8% ✨": 2.5,
+        "78.6%": 1.5,
+        "100.0% (Đỉnh)": 1, "100.0% (Đáy)": 1,
     }
     x_range = [df["time"].iloc[0], df["time"].iloc[-1]]
     x_label = df["time"].iloc[-1]  # vị trí gắn nhãn (bên phải)
 
     for label, price in fib_levels.items():
-        is_key = label in ("38.2%", "50.0%", "61.8%")
+        if label.startswith("_"):
+            continue   # bỏ qua metadata keys
+        is_key = label in ("38.2%", "50.0%", "61.8% ✨")
+        color_fib = fib_palette.get(label, "#9E9E9E")
+        width_fib = fib_width.get(label, 1)
         fig.add_trace(
             go.Scatter(
                 x=x_range, y=[price, price],
                 mode="lines",
                 line=dict(
-                    color=fib_palette[label],
-                    width=fib_width[label],
+                    color=color_fib,
+                    width=width_fib,
                     dash="dot" if not is_key else "dash",
                 ),
                 name=f"Fib {label}",
@@ -750,7 +795,7 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
             x=x_label, y=price,
             text=f"  {label} · {price:,.0f}",
             showarrow=False,
-            font=dict(color=fib_palette[label], size=10 if is_key else 9),
+            font=dict(color=color_fib, size=10 if is_key else 9),
             xanchor="left",
             row=1, col=1,
         )
@@ -849,9 +894,14 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
     )
 
     # ── Fibonacci table ───────────────────────────────────────────────────
+    _fib_is_down = fib_levels.get("_is_downtrend", True)
+    _fib_high    = fib_levels.get("_high", 0)
+    _fib_low     = fib_levels.get("_low",  0)
     with st.expander("📐 Xem bảng mức Fibonacci Retracement"):
+        fib_label = "Retracement từ Đỉnh → Đáy (vùng HỖ TRỢ)" if _fib_is_down else "Retracement từ Đáy → Đỉnh (vùng KHÁNG CỰ)"
+        st.caption(f"📌 {fib_label} &nbsp;|&nbsp; Đỉnh: **{_fib_high:,.0f} đ** &nbsp;·&nbsp; Đáy: **{_fib_low:,.0f} đ**")
         fib_df = pd.DataFrame(
-            [{"Mức Fibonacci": k, "Giá (đ)": f"{v:,.0f}"} for k, v in fib_levels.items()]
+            [{"Mức Fibonacci": k, "Giá (đ)": f"{v:,.0f}"} for k, v in fib_levels.items() if not k.startswith("_")]
         )
         st.dataframe(fib_df, hide_index=True, width='stretch')
 
@@ -1110,21 +1160,51 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
         score -= 1; signal_details.append(("Tenkan/Kijun", "Tenkan < Kijun — Tín hiệu bán", "🔴"))
 
     # Fibonacci — giá gần hỗ trợ
-    fib_50 = fib_levels["50.0%"]
-    fib_618 = fib_levels["61.8%"]
-    fib_382 = fib_levels["38.2%"]
-    close_now = latest["close"]
-    fib_margin = (fib_levels["0.0%"] - fib_levels["100.0%"]) * 0.03
-    if fib_618 - fib_margin <= close_now <= fib_618 + fib_margin:
-        score += 2; signal_details.append(("Fibonacci", f"Giá tại Fib 61.8% ({fib_618:,.0f}) — Hỗ trợ mạnh", "🟢"))
-    elif fib_50 - fib_margin <= close_now <= fib_50 + fib_margin:
-        score += 1; signal_details.append(("Fibonacci", f"Giá tại Fib 50.0% ({fib_50:,.0f}) — Hỗ trợ trung bình", "🟡"))
-    elif fib_382 - fib_margin <= close_now <= fib_382 + fib_margin:
-        score += 1; signal_details.append(("Fibonacci", f"Giá tại Fib 38.2% ({fib_382:,.0f}) — Kháng cự nhẹ", "🟡"))
-    elif close_now < fib_618:
-        score += 1; signal_details.append(("Fibonacci", f"Giá dưới Fib 61.8% ({fib_618:,.0f}) — Vùng hỗ trợ", "🟡"))
+    _is_down   = fib_levels.get("_is_downtrend", True)
+    _fib_h     = fib_levels.get("_high", 0)
+    _fib_l     = fib_levels.get("_low",  0)
+    _diff      = _fib_h - _fib_l
+
+    if _is_down:
+        fib_236_v  = _fib_h - 0.236 * _diff
+        fib_382_v  = _fib_h - 0.382 * _diff
+        fib_50_v   = _fib_h - 0.500 * _diff
+        fib_618_v  = _fib_h - 0.618 * _diff
+        fib_786_v  = _fib_h - 0.786 * _diff
     else:
-        signal_details.append(("Fibonacci", f"Giá trên Fib 38.2% ({fib_382:,.0f}) — Chú ý kháng cự", "⚪"))
+        fib_236_v  = _fib_l + 0.236 * _diff
+        fib_382_v  = _fib_l + 0.382 * _diff
+        fib_50_v   = _fib_l + 0.500 * _diff
+        fib_618_v  = _fib_l + 0.618 * _diff
+        fib_786_v  = _fib_l + 0.786 * _diff
+
+    close_now  = latest["close"]
+    fib_margin = _diff * 0.03   # ±3% tolerance
+
+    if _is_down:
+        # Downtrend: các mức Fib là HỖ TRỢ → giá gần Fib thấp = tốt để mua
+        if fib_618_v - fib_margin <= close_now <= fib_618_v + fib_margin:
+            score += 2; signal_details.append(("Fibonacci", f"Giá tại Fib 61.8% ({fib_618_v:,.0f}) ✨ — Hỗ trợ vàng (Golden Ratio)", "🟢"))
+        elif fib_50_v - fib_margin <= close_now <= fib_50_v + fib_margin:
+            score += 1; signal_details.append(("Fibonacci", f"Giá tại Fib 50.0% ({fib_50_v:,.0f}) — Hỗ trợ tâm lý", "🟡"))
+        elif fib_786_v - fib_margin <= close_now <= fib_786_v + fib_margin:
+            score += 2; signal_details.append(("Fibonacci", f"Giá tại Fib 78.6% ({fib_786_v:,.0f}) — Hỗ trợ rất mạnh", "🟢"))
+        elif close_now < fib_618_v:
+            score += 1; signal_details.append(("Fibonacci", f"Giá dưới Fib 61.8% ({fib_618_v:,.0f}) — Vùng hỗ trợ sâu", "🟡"))
+        elif close_now > fib_382_v:
+            score -= 1; signal_details.append(("Fibonacci", f"Giá trên Fib 38.2% ({fib_382_v:,.0f}) — Gần vùng kháng cự", "🔴"))
+        else:
+            signal_details.append(("Fibonacci", f"Giá giữa Fib 38.2%–61.8% — Vùng trung tính", "⚪"))
+    else:
+        # Uptrend recovery: các mức Fib là KHÁNG CỰ → giá vượt Fib cao = tốt
+        if close_now > fib_618_v:
+            score += 2; signal_details.append(("Fibonacci", f"Giá vượt Fib 61.8% ({fib_618_v:,.0f}) ✨ — Breakout mạnh", "🟢"))
+        elif close_now > fib_50_v:
+            score += 1; signal_details.append(("Fibonacci", f"Giá vượt Fib 50.0% ({fib_50_v:,.0f}) — Phục hồi tốt", "🟡"))
+        elif close_now < fib_382_v:
+            score -= 1; signal_details.append(("Fibonacci", f"Giá dưới Fib 38.2% ({fib_382_v:,.0f}) — Phục hồi yếu", "🔴"))
+        else:
+            signal_details.append(("Fibonacci", f"Giá tại Fib 38.2%–50.0% — Đang kiểm tra kháng cự", "⚪"))
 
     # --- Xác định khuyến nghị tổng ---
     max_score = 12
@@ -1180,21 +1260,99 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
                     unsafe_allow_html=True,
                 )
 
-    # Gợi ý vùng mua / stoploss / target
-    fib_support = min(fib_618, fib_50)
-    fib_target1 = fib_382
-    fib_target2 = fib_levels["23.6%"]
-    bb_stop = latest["BB_Low"]
+    # ── Gợi ý vùng mua / stoploss / target ──────────────────────────────
+    _is_down2  = fib_levels.get("_is_downtrend", True)
+    _fib_h2    = fib_levels.get("_high", 0)
+    _fib_l2    = fib_levels.get("_low",  0)
+    _diff2     = _fib_h2 - _fib_l2
 
-    col_a, col_b, col_c, col_d = st.columns(4)
-    col_a.metric("📥 Vùng mua gợi ý", f"{fib_support:,.0f} đ",
-                 help="Dựa trên Fibonacci hỗ trợ 50%–61.8%")
-    col_b.metric("🛑 Stop Loss tham khảo", f"{bb_stop:,.0f} đ",
-                 help="BB Lower — vùng bảo vệ vị thế")
-    col_c.metric("🎯 Target 1", f"{fib_target1:,.0f} đ",
-                 help="Fibonacci 38.2% — kháng cự gần")
-    col_d.metric("🎯 Target 2", f"{fib_target2:,.0f} đ",
-                 help="Fibonacci 23.6% — mục tiêu xa hơn")
+    if _is_down2:
+        _f236 = _fib_h2 - 0.236 * _diff2
+        _f382 = _fib_h2 - 0.382 * _diff2
+        _f50  = _fib_h2 - 0.500 * _diff2
+        _f618 = _fib_h2 - 0.618 * _diff2
+        _f786 = _fib_h2 - 0.786 * _diff2
+        # Vùng mua: dải 50%–61.8% (hỗ trợ vàng khi điều chỉnh)
+        buy_zone_low  = _f618
+        buy_zone_high = _f50
+        # Stop loss: dưới 78.6% hoặc BB_Low (lấy mức an toàn hơn)
+        sl_fib = _f786 * 0.985   # 1.5% dưới Fib 78.6%
+        sl_bb  = latest["BB_Low"]
+        stop_loss = min(sl_fib, sl_bb)
+        # Targets: giá trên hiện tại → 38.2% rồi 23.6%
+        close_p = latest["close"]
+        target1 = _f382
+        target2 = _f236
+    else:
+        _f236 = _fib_l2 + 0.236 * _diff2
+        _f382 = _fib_l2 + 0.382 * _diff2
+        _f50  = _fib_l2 + 0.500 * _diff2
+        _f618 = _fib_l2 + 0.618 * _diff2
+        _f786 = _fib_l2 + 0.786 * _diff2
+        # Vùng mua: ngay trên đáy tới 38.2% retracement (uptrend)
+        buy_zone_low  = _fib_l2
+        buy_zone_high = _f382
+        # Stop loss: dưới đáy
+        sl_fib = _fib_l2 * 0.985
+        sl_bb  = latest["BB_Low"]
+        stop_loss = min(sl_fib, sl_bb)
+        # Targets: 61.8% và 78.6%
+        target1 = _f618
+        target2 = _f786
+
+    # Xác định delta hiển thị (so với giá hiện tại)
+    close_p = latest["close"]
+    delta_buy  = f"{((buy_zone_high - close_p) / close_p * 100):+.1f}%" if close_p > 0 else ""
+    delta_sl   = f"{((stop_loss - close_p) / close_p * 100):+.1f}%" if close_p > 0 else ""
+    delta_tg1  = f"{((target1 - close_p) / close_p * 100):+.1f}%" if close_p > 0 else ""
+    delta_tg2  = f"{((target2 - close_p) / close_p * 100):+.1f}%" if close_p > 0 else ""
+
+    st.markdown(
+        f"""
+<div style="background:rgba(255,255,255,0.04); border-radius:12px; padding:16px 20px;
+            border:1px solid rgba(255,255,255,0.12); margin-bottom:12px;">
+  <div style="font-size:0.85rem; color:#aaa; margin-bottom:10px; letter-spacing:0.5px;">
+    📐 &nbsp;Fibonacci {'Retracement (Đỉnh→Đáy)' if _is_down2 else 'Recovery (Đáy→Đỉnh)'} &nbsp;·&nbsp;
+    Đỉnh <b style="color:#EF5350">{_fib_h2:,.0f}</b> đ &nbsp;·&nbsp;
+    Đáy <b style="color:#26a69a">{_fib_l2:,.0f}</b> đ &nbsp;·&nbsp;
+    Giá hiện tại <b style="color:#FFD740">{close_p:,.0f}</b> đ
+  </div>
+  <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:12px;">
+    <div style="background:rgba(0,200,83,0.12); border:1px solid #00C853; border-radius:10px; padding:12px;">
+      <div style="font-size:0.75rem; color:#aaa;">📥 Vùng mua gợi ý</div>
+      <div style="font-size:1.1rem; font-weight:700; color:#00C853; margin:4px 0;">
+        {buy_zone_low:,.0f} – {buy_zone_high:,.0f}
+      </div>
+      <div style="font-size:0.75rem; color:#888;">Fib {'61.8%→50.0%' if _is_down2 else 'Đáy→38.2%'} (vùng hỗ trợ vàng)</div>
+    </div>
+    <div style="background:rgba(255,82,82,0.10); border:1px solid #FF5252; border-radius:10px; padding:12px;">
+      <div style="font-size:0.75rem; color:#aaa;">🛑 Stop Loss tham khảo</div>
+      <div style="font-size:1.1rem; font-weight:700; color:#FF5252; margin:4px 0;">
+        {stop_loss:,.0f} đ
+      </div>
+      <div style="font-size:0.75rem; color:#888; line-height:1.3;">
+        {delta_sl} · Min(BB Lower, Fib {'78.6%-1.5%' if _is_down2 else 'Đáy-1.5%'})
+      </div>
+    </div>
+    <div style="background:rgba(33,150,243,0.10); border:1px solid #2196F3; border-radius:10px; padding:12px;">
+      <div style="font-size:0.75rem; color:#aaa;">🎯 Target 1</div>
+      <div style="font-size:1.1rem; font-weight:700; color:#2196F3; margin:4px 0;">
+        {target1:,.0f} đ
+      </div>
+      <div style="font-size:0.75rem; color:#888;">{delta_tg1} · Fib {'38.2%' if _is_down2 else '61.8%'} — kháng cự gần</div>
+    </div>
+    <div style="background:rgba(224,64,251,0.10); border:1px solid #E040FB; border-radius:10px; padding:12px;">
+      <div style="font-size:0.75rem; color:#aaa;">🎯 Target 2</div>
+      <div style="font-size:1.1rem; font-weight:700; color:#E040FB; margin:4px 0;">
+        {target2:,.0f} đ
+      </div>
+      <div style="font-size:0.75rem; color:#888;">{delta_tg2} · Fib {'23.6%' if _is_down2 else '78.6%'} — mục tiêu xa hơn</div>
+    </div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
     # ─────────────────────────────────────────────────────────────────────
     # AI ANALYSIS
