@@ -362,56 +362,112 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
     # ── Ichimoku ──────────────────────────────────────────────────────────
     fig.add_trace(
         go.Scatter(x=df["time"], y=df["Tenkan"],
-                   line=dict(color="#00BFFF", width=1.5), name="Tenkan-sen"),
+                   line=dict(color="#00E5FF", width=2.0),
+                   name="Tenkan-sen (9)"),
         row=1, col=1,
     )
     fig.add_trace(
         go.Scatter(x=df["time"], y=df["Kijun"],
-                   line=dict(color="#FF6347", width=1.5), name="Kijun-sen"),
+                   line=dict(color="#FF6B6B", width=2.0),
+                   name="Kijun-sen (26)"),
         row=1, col=1,
     )
-    # Kumo Cloud: fill between SpanA and SpanB
+    # Chikou Span
     fig.add_trace(
-        go.Scatter(
-            x=df["time"], y=df["SpanA"],
-            line=dict(color="rgba(0,0,0,0)", width=0),
-            showlegend=False, name="SpanA_base",
-        ),
+        go.Scatter(x=df["time"], y=df["Chikou"],
+                   line=dict(color="#B39DDB", width=1.2, dash="dot"),
+                   name="Chikou Span",
+                   opacity=0.7),
+        row=1, col=1,
+    )
+    # Kumo Cloud: tô màu xanh khi SpanA > SpanB (Bullish), đỏ khi ngược lại (Bearish)
+    # Vùng Bullish (SpanA >= SpanB)
+    span_a = df["SpanA"].values
+    span_b = df["SpanB"].values
+    times  = df["time"].values
+
+    # Vẽ hai lớp cloud: Bullish (xanh) và Bearish (đỏ)
+    bullish_a = np.where(span_a >= span_b, span_a, np.nan)
+    bullish_b = np.where(span_a >= span_b, span_b, np.nan)
+    bearish_a = np.where(span_a < span_b,  span_a, np.nan)
+    bearish_b = np.where(span_a < span_b,  span_b, np.nan)
+
+    # Bullish cloud (xanh)
+    fig.add_trace(
+        go.Scatter(x=times, y=bullish_a,
+                   line=dict(color="rgba(0,0,0,0)", width=0),
+                   showlegend=False, name="_bull_a"),
         row=1, col=1,
     )
     fig.add_trace(
-        go.Scatter(
-            x=df["time"], y=df["SpanB"],
-            fill="tonexty",
-            fillcolor="rgba(100,200,100,0.12)",
-            line=dict(color="rgba(0,0,0,0)", width=0),
-            name="Kumo Cloud",
-        ),
+        go.Scatter(x=times, y=bullish_b,
+                   fill="tonexty",
+                   fillcolor="rgba(38,166,154,0.18)",
+                   line=dict(color="#26a69a", width=0.8),
+                   name="Kumo Bullish ☁️",
+                   legendgroup="kumo"),
+        row=1, col=1,
+    )
+    # Bearish cloud (đỏ)
+    fig.add_trace(
+        go.Scatter(x=times, y=bearish_b,
+                   line=dict(color="rgba(0,0,0,0)", width=0),
+                   showlegend=False, name="_bear_b"),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=times, y=bearish_a,
+                   fill="tonexty",
+                   fillcolor="rgba(239,83,80,0.18)",
+                   line=dict(color="#ef5350", width=0.8),
+                   name="Kumo Bearish ☁️",
+                   legendgroup="kumo"),
         row=1, col=1,
     )
 
     # ── Fibonacci Retracement ─────────────────────────────────────────────
     fib_palette = {
-        "0.0%":   "#888888",
+        "0.0%":   "#9E9E9E",
         "23.6%":  "#7986CB",
-        "38.2%":  "#FFA726",
+        "38.2%":  "#29B6F6",
         "50.0%":  "#EF5350",
         "61.8%":  "#FFA726",
-        "78.6%":  "#7986CB",
-        "100.0%": "#888888",
+        "78.6%":  "#AB47BC",
+        "100.0%": "#9E9E9E",
+    }
+    fib_width = {
+        "0.0%": 1, "23.6%": 1, "38.2%": 1.5,
+        "50.0%": 2.5, "61.8%": 1.5, "78.6%": 1, "100.0%": 1,
     }
     x_range = [df["time"].iloc[0], df["time"].iloc[-1]]
+    x_label = df["time"].iloc[-1]  # vị trí gắn nhãn (bên phải)
+
     for label, price in fib_levels.items():
+        is_key = label in ("38.2%", "50.0%", "61.8%")
         fig.add_trace(
             go.Scatter(
                 x=x_range, y=[price, price],
                 mode="lines",
-                line=dict(color=fib_palette[label], width=1, dash="dot"),
+                line=dict(
+                    color=fib_palette[label],
+                    width=fib_width[label],
+                    dash="dot" if not is_key else "dash",
+                ),
                 name=f"Fib {label}",
-                text=f"{label} ({price:,.0f})",
+                text=f"Fib {label}  {price:,.0f}",
                 hoverinfo="text",
                 showlegend=True,
             ),
+            row=1, col=1,
+        )
+        # Thêm nhãn chú thích giá bên phải mỗi mức Fibonacci
+        fig.add_annotation(
+            xref="x", yref="y",
+            x=x_label, y=price,
+            text=f"  {label} · {price:,.0f}",
+            showarrow=False,
+            font=dict(color=fib_palette[label], size=10 if is_key else 9),
+            xanchor="left",
             row=1, col=1,
         )
 
@@ -477,15 +533,18 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
     # ── Layout ────────────────────────────────────────────────────────────
     fig.update_layout(
         template="plotly_dark",
-        height=950,
+        height=1050,
         xaxis_rangeslider_visible=False,
         legend=dict(
             orientation="h",
             yanchor="bottom", y=1.01,
             xanchor="right",  x=1,
-            font=dict(size=11),
+            font=dict(size=10),
+            bgcolor="rgba(0,0,0,0.3)",
+            bordercolor="rgba(255,255,255,0.1)",
+            borderwidth=1,
         ),
-        margin=dict(l=10, r=10, t=60, b=10),
+        margin=dict(l=10, r=120, t=60, b=10),
     )
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.06)")
@@ -511,6 +570,146 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
             [{"Mức Fibonacci": k, "Giá (đ)": f"{v:,.0f}"} for k, v in fib_levels.items()]
         )
         st.dataframe(fib_df, hide_index=True, width='stretch')
+
+    # ─────────────────────────────────────────────────────────────────────
+    # QUICK RECOMMENDATION CARD (không cần API Key)
+    # ─────────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("🚦 Khuyến Nghị Nhanh (Tín Hiệu Kỹ Thuật Tổng Hợp)")
+
+    # --- Tính điểm tín hiệu ---
+    score = 0
+    signal_details = []
+
+    # RSI
+    rsi_now = latest["RSI"]
+    if rsi_now < 35:
+        score += 2; signal_details.append(("RSI", f"{rsi_now:.1f} — Quá bán 📈", "🟢"))
+    elif rsi_now < 50:
+        score += 1; signal_details.append(("RSI", f"{rsi_now:.1f} — Vùng tích lũy", "🟡"))
+    elif rsi_now > 70:
+        score -= 2; signal_details.append(("RSI", f"{rsi_now:.1f} — Quá mua 📉", "🔴"))
+    else:
+        signal_details.append(("RSI", f"{rsi_now:.1f} — Trung tính", "⚪"))
+
+    # MACD
+    if latest["MACD"] > latest["MACD_Signal"]:
+        score += 2; signal_details.append(("MACD", "Cắt lên — Xu hướng tăng", "🟢"))
+    else:
+        score -= 1; signal_details.append(("MACD", "Cắt xuống — Xu hướng giảm", "🔴"))
+
+    # MCDX
+    mcdx_now = latest["MCDX"]
+    if mcdx_now > 0.2:
+        score += 2; signal_details.append(("MCDX", f"{mcdx_now:.3f} — Động lượng mạnh", "🟢"))
+    elif mcdx_now > 0:
+        score += 1; signal_details.append(("MCDX", f"{mcdx_now:.3f} — Động lượng nhẹ", "🟡"))
+    else:
+        score -= 1; signal_details.append(("MCDX", f"{mcdx_now:.3f} — Yếu dần", "🔴"))
+
+    # Ichimoku
+    span_a_last = latest["SpanA"] if pd.notna(latest["SpanA"]) else None
+    span_b_last = latest["SpanB"] if pd.notna(latest["SpanB"]) else None
+    if span_a_last and span_b_last:
+        cloud_top = max(span_a_last, span_b_last)
+        cloud_bot = min(span_a_last, span_b_last)
+        if latest["close"] > cloud_top:
+            score += 2; signal_details.append(("Ichimoku", "Giá trên mây — Bullish ☁️✅", "🟢"))
+        elif latest["close"] < cloud_bot:
+            score -= 2; signal_details.append(("Ichimoku", "Giá dưới mây — Bearish ☁️❌", "🔴"))
+        else:
+            signal_details.append(("Ichimoku", "Giá trong mây — Trung tính", "🟡"))
+    if latest["Tenkan"] > latest["Kijun"]:
+        score += 1; signal_details.append(("Tenkan/Kijun", "Tenkan > Kijun — Tín hiệu mua", "🟢"))
+    else:
+        score -= 1; signal_details.append(("Tenkan/Kijun", "Tenkan < Kijun — Tín hiệu bán", "🔴"))
+
+    # Fibonacci — giá gần hỗ trợ
+    fib_50 = fib_levels["50.0%"]
+    fib_618 = fib_levels["61.8%"]
+    fib_382 = fib_levels["38.2%"]
+    close_now = latest["close"]
+    fib_margin = (fib_levels["0.0%"] - fib_levels["100.0%"]) * 0.03
+    if fib_618 - fib_margin <= close_now <= fib_618 + fib_margin:
+        score += 2; signal_details.append(("Fibonacci", f"Giá tại Fib 61.8% ({fib_618:,.0f}) — Hỗ trợ mạnh", "🟢"))
+    elif fib_50 - fib_margin <= close_now <= fib_50 + fib_margin:
+        score += 1; signal_details.append(("Fibonacci", f"Giá tại Fib 50.0% ({fib_50:,.0f}) — Hỗ trợ trung bình", "🟡"))
+    elif fib_382 - fib_margin <= close_now <= fib_382 + fib_margin:
+        score += 1; signal_details.append(("Fibonacci", f"Giá tại Fib 38.2% ({fib_382:,.0f}) — Kháng cự nhẹ", "🟡"))
+    elif close_now < fib_618:
+        score += 1; signal_details.append(("Fibonacci", f"Giá dưới Fib 61.8% ({fib_618:,.0f}) — Vùng hỗ trợ", "🟡"))
+    else:
+        signal_details.append(("Fibonacci", f"Giá trên Fib 38.2% ({fib_382:,.0f}) — Chú ý kháng cự", "⚪"))
+
+    # --- Xác định khuyến nghị tổng ---
+    max_score = 12
+    pct_score = score / max_score
+
+    if pct_score >= 0.45:
+        rec_label  = "✅ MUA"
+        rec_color  = "#00C853"
+        rec_bg     = "rgba(0,200,83,0.12)"
+        rec_border = "#00C853"
+        rec_desc   = "Tín hiệu kỹ thuật thuận lợi — Cân nhắc mở vị thế mua."
+    elif pct_score >= 0.15:
+        rec_label  = "⏳ THEO DÕI"
+        rec_color  = "#FFC107"
+        rec_bg     = "rgba(255,193,7,0.12)"
+        rec_border = "#FFC107"
+        rec_desc   = "Tín hiệu chưa rõ ràng — Chờ xác nhận thêm trước khi vào lệnh."
+    else:
+        rec_label  = "🚫 TRÁNH / BÁN"
+        rec_color  = "#FF5252"
+        rec_bg     = "rgba(255,82,82,0.12)"
+        rec_border = "#FF5252"
+        rec_desc   = "Tín hiệu yếu hoặc tiêu cực — Không nên mua, cân nhắc cắt lỗ nếu đang giữ."
+
+    # Hiển thị card tổng
+    stars = "⭐" * max(1, min(5, round((score + max_score) / (2 * max_score) * 5)))
+    st.markdown(
+        f"""
+<div style="border:2px solid {rec_border}; border-radius:12px; padding:20px 28px;
+            background:{rec_bg}; margin-bottom:16px;">
+  <div style="font-size:2rem; font-weight:700; color:{rec_color}; letter-spacing:1px;">
+    {rec_label}
+  </div>
+  <div style="font-size:1.1rem; color:#ccc; margin-top:6px;">{rec_desc}</div>
+  <div style="margin-top:10px; font-size:1rem; color:#aaa;">
+    Điểm tổng hợp: <b style="color:{rec_color};">{score}/{max_score}</b> &nbsp;|&nbsp; {stars}
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # Hiển thị chi tiết từng tín hiệu
+    with st.expander("📊 Chi tiết tín hiệu từng chỉ báo"):
+        cols = st.columns(2)
+        for i, (ind, detail, dot) in enumerate(signal_details):
+            with cols[i % 2]:
+                st.markdown(
+                    f"<div style='padding:8px 12px; margin:4px 0; border-radius:8px; "
+                    f"background:rgba(255,255,255,0.05);'>"
+                    f"<b>{dot} {ind}</b><br>"
+                    f"<span style='color:#ccc; font-size:0.9rem;'>{detail}</span></div>",
+                    unsafe_allow_html=True,
+                )
+
+    # Gợi ý vùng mua / stoploss / target
+    fib_support = min(fib_618, fib_50)
+    fib_target1 = fib_382
+    fib_target2 = fib_levels["23.6%"]
+    bb_stop = latest["BB_Low"]
+
+    col_a, col_b, col_c, col_d = st.columns(4)
+    col_a.metric("📥 Vùng mua gợi ý", f"{fib_support:,.0f} đ",
+                 help="Dựa trên Fibonacci hỗ trợ 50%–61.8%")
+    col_b.metric("🛑 Stop Loss tham khảo", f"{bb_stop:,.0f} đ",
+                 help="BB Lower — vùng bảo vệ vị thế")
+    col_c.metric("🎯 Target 1", f"{fib_target1:,.0f} đ",
+                 help="Fibonacci 38.2% — kháng cự gần")
+    col_d.metric("🎯 Target 2", f"{fib_target2:,.0f} đ",
+                 help="Fibonacci 23.6% — mục tiêu xa hơn")
 
     # ─────────────────────────────────────────────────────────────────────
     # AI ANALYSIS
