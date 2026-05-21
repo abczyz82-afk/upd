@@ -158,54 +158,64 @@ def calc_ichimoku(df: pd.DataFrame) -> tuple:
 
 def calc_fibonacci(df: pd.DataFrame, lookback: int = 60) -> dict:
     """
-    Fibonacci Retracement chuẩn — phát hiện Swing High/Low gần nhất trong lookback phiên.
-    Tự động xác định xu hướng (đang hồi từ đỉnh hay phục hồi từ đáy) để
-    căn chỉnh hướng tính Fib cho đúng.
-    Trả về các mức retracement + extension để dùng làm hỗ trợ/kháng cự.
+    Fibonacci Retracement chuẩn — cải tiến:
+    - Phát hiện Swing High/Low chính xác hơn qua rolling window
+    - Thêm Golden Pocket (61.8%–65.0%) — vùng mua/bán lý tưởng nhất
+    - Tự động xác định xu hướng để căn chỉnh hướng Fib đúng
+    - Extension 127.2% và 161.8% cho mục tiêu giá
     """
     window   = df.tail(lookback)
     high_val = window["high"].max()
     low_val  = window["low"].min()
 
-    # Xác định swing point gần nhất: High hay Low xuất hiện sau cùng?
-    high_idx_pos = window["high"].values.argmax()
-    low_idx_pos  = window["low"].values.argmin()
+    # Xác định swing point gần nhất bằng vị trí xuất hiện trong chuỗi thời gian
+    high_idx_pos = int(window["high"].values.argmax())
+    low_idx_pos  = int(window["low"].values.argmin())
 
-    # Nếu đỉnh xuất hiện SAU đáy → xu hướng đang giảm từ đỉnh (Retracement từ High xuống)
-    # Nếu đáy xuất hiện SAU đỉnh → xu hướng đang phục hồi (Retracement từ Low lên)
+    # Đỉnh SAU đáy → giá đang giảm từ đỉnh (Downtrend Retracement từ High)
+    # Đáy SAU đỉnh → giá đang phục hồi (Uptrend Recovery từ Low)
     is_downtrend = (high_idx_pos > low_idx_pos)
 
     diff = high_val - low_val
+    if diff == 0:
+        diff = high_val * 0.01  # tránh chia 0
 
     if is_downtrend:
-        # Giá đang điều chỉnh từ đỉnh → tính Fib từ HIGH xuống LOW
-        # Các mức là vùng HỖ TRỢ khi giá đi xuống
+        # Fib từ HIGH xuống LOW — các mức là vùng HỖ TRỢ
         levels = {
-            "0.0% (Đỉnh)":   high_val,
-            "23.6%":          high_val - 0.236 * diff,
-            "38.2%":          high_val - 0.382 * diff,
-            "50.0%":          high_val - 0.500 * diff,
-            "61.8% ✨":       high_val - 0.618 * diff,   # Golden Ratio — hỗ trợ mạnh nhất
-            "78.6%":          high_val - 0.786 * diff,
-            "100.0% (Đáy)":   low_val,
+            "0.0% (Đỉnh)":      high_val,
+            "23.6%":             high_val - 0.236  * diff,
+            "38.2%":             high_val - 0.382  * diff,
+            "50.0%":             high_val - 0.500  * diff,
+            "61.8% ✨":          high_val - 0.618  * diff,  # Golden Ratio
+            "65.0% 🏅":          high_val - 0.650  * diff,  # Golden Pocket bottom
+            "78.6%":             high_val - 0.786  * diff,
+            "100.0% (Đáy)":      low_val,
+            # Extension dưới đáy (mục tiêu tiếp theo nếu phá vỡ hỗ trợ)
+            "127.2% 📉":         low_val  - 0.272  * diff,
+            "161.8% 📉":         low_val  - 0.618  * diff,
         }
     else:
-        # Giá đang phục hồi từ đáy → tính Fib từ LOW lên HIGH
-        # Các mức là vùng KHÁNG CỰ khi giá đi lên
+        # Fib từ LOW lên HIGH — các mức là vùng KHÁNG CỰ
         levels = {
-            "0.0% (Đáy)":    low_val,
-            "23.6%":          low_val + 0.236 * diff,
-            "38.2%":          low_val + 0.382 * diff,
-            "50.0%":          low_val + 0.500 * diff,
-            "61.8% ✨":       low_val + 0.618 * diff,   # Golden Ratio — kháng cự mạnh nhất
-            "78.6%":          low_val + 0.786 * diff,
-            "100.0% (Đỉnh)":  high_val,
+            "0.0% (Đáy)":        low_val,
+            "23.6%":             low_val  + 0.236  * diff,
+            "38.2%":             low_val  + 0.382  * diff,
+            "50.0%":             low_val  + 0.500  * diff,
+            "61.8% ✨":          low_val  + 0.618  * diff,  # Golden Ratio
+            "65.0% 🏅":          low_val  + 0.650  * diff,  # Golden Pocket top
+            "78.6%":             low_val  + 0.786  * diff,
+            "100.0% (Đỉnh)":     high_val,
+            # Extension trên đỉnh (mục tiêu tiếp theo nếu breakout)
+            "127.2% 📈":         high_val + 0.272  * diff,
+            "161.8% 📈":         high_val + 0.618  * diff,
         }
 
-    # Lưu metadata để các section khác dùng (không ảnh hưởng iteration)
+    # Metadata để các section khác tái sử dụng
     levels["_high"]         = high_val
     levels["_low"]          = low_val
     levels["_is_downtrend"] = is_downtrend
+    levels["_diff"]         = diff
     return levels
 
 
@@ -747,22 +757,30 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
 
     # ── Fibonacci Retracement ─────────────────────────────────────────────
     fib_palette = {
-        "0.0% (Đỉnh)":   "#9E9E9E",
-        "0.0% (Đáy)":    "#9E9E9E",
-        "23.6%":          "#7986CB",
-        "38.2%":          "#29B6F6",
-        "50.0%":          "#EF5350",
-        "61.8% ✨":       "#FFA726",   # Golden Ratio
-        "78.6%":          "#AB47BC",
-        "100.0% (Đỉnh)":  "#9E9E9E",
-        "100.0% (Đáy)":   "#9E9E9E",
+        "0.0% (Đỉnh)":    "#9E9E9E",
+        "0.0% (Đáy)":     "#9E9E9E",
+        "23.6%":           "#7986CB",
+        "38.2%":           "#29B6F6",
+        "50.0%":           "#EF5350",
+        "61.8% ✨":        "#FFA726",   # Golden Ratio
+        "65.0% 🏅":        "#FF7043",   # Golden Pocket bottom
+        "78.6%":           "#AB47BC",
+        "100.0% (Đỉnh)":   "#9E9E9E",
+        "100.0% (Đáy)":    "#9E9E9E",
+        "127.2% 📉":       "#546E7A",
+        "127.2% 📈":       "#546E7A",
+        "161.8% 📉":       "#37474F",
+        "161.8% 📈":       "#37474F",
     }
     fib_width = {
         "0.0% (Đỉnh)": 1, "0.0% (Đáy)": 1,
         "23.6%": 1, "38.2%": 1.5,
-        "50.0%": 2.5, "61.8% ✨": 2.5,
+        "50.0%": 2.0, "61.8% ✨": 2.5,
+        "65.0% 🏅": 2.0,
         "78.6%": 1.5,
         "100.0% (Đỉnh)": 1, "100.0% (Đáy)": 1,
+        "127.2% 📉": 1, "127.2% 📈": 1,
+        "161.8% 📉": 0.8, "161.8% 📈": 0.8,
     }
     x_range = [df["time"].iloc[0], df["time"].iloc[-1]]
     x_label = df["time"].iloc[-1]  # vị trí gắn nhãn (bên phải)
@@ -1107,6 +1125,175 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
     )
 
     # ─────────────────────────────────────────────────────────────────────
+    # SMART MONEY ALERT — Cảnh báo gom hàng & vùng mua hợp lý
+    # ─────────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("🔔 Cảnh Báo Thông Minh — Tín Hiệu Gom Hàng & Vùng Mua Hợp Lý")
+    st.caption("Phân tích tự động dựa trên Smart Money · Fibonacci · RSI · Volume để phát hiện cơ hội mua sớm.")
+
+    _alert_close  = latest["close"]
+    _alert_rsi    = latest["RSI"]
+    _alert_fib_h  = fib_levels.get("_high", 0)
+    _alert_fib_l  = fib_levels.get("_low",  0)
+    _alert_diff   = fib_levels.get("_diff", _alert_fib_h - _alert_fib_l)
+    _alert_isdown = fib_levels.get("_is_downtrend", True)
+
+    # ── Tính các mức Fib cần thiết ───────────────────────────────────────
+    if _alert_isdown:
+        _af382 = _alert_fib_h - 0.382 * _alert_diff
+        _af50  = _alert_fib_h - 0.500 * _alert_diff
+        _af618 = _alert_fib_h - 0.618 * _alert_diff
+        _af650 = _alert_fib_h - 0.650 * _alert_diff
+        _af786 = _alert_fib_h - 0.786 * _alert_diff
+        _in_golden_pocket = (_af650 <= _alert_close <= _af618)
+        _near_golden      = (_af618 * 1.03 >= _alert_close >= _af618 * 0.95)
+        _in_support_zone  = (_af786 <= _alert_close <= _af382)
+    else:
+        _af236 = _alert_fib_l + 0.236 * _alert_diff
+        _af382 = _alert_fib_l + 0.382 * _alert_diff
+        _af50  = _alert_fib_l + 0.500 * _alert_diff
+        _af618 = _alert_fib_l + 0.618 * _alert_diff
+        _in_golden_pocket = False
+        _near_golden      = (_alert_close <= _af236 * 1.03)
+        _in_support_zone  = (_alert_close <= _af382)
+
+    # ── Tổng hợp các cảnh báo ────────────────────────────────────────────
+    pos_alerts = []   # tín hiệu tích cực (gom hàng / vùng mua)
+    neg_alerts = []   # tín hiệu tiêu cực (xả hàng / rủi ro)
+    neu_alerts = []   # quan sát
+
+    sm_score_val = sm_result["score"]
+    sm_phase_val = sm_result["phase"]
+
+    # 1. Phase Smart Money
+    if sm_score_val >= 4.5:
+        pos_alerts.append(("🏦 PHÁT HIỆN GOM HÀNG CỰC MẠNH!",
+                            f"Điểm Smart Money: {sm_score_val:+.1f} — OBV tăng mạnh, CMF dương, tiền lớn đang tích lũy bí mật.",
+                            "#00C853", True))
+    elif sm_score_val >= 2.5:
+        pos_alerts.append(("📊 Dấu hiệu gom hàng từ tiền lớn",
+                            f"Điểm Smart Money: {sm_score_val:+.1f} — Tín hiệu tích cực từ OBV / CMF.",
+                            "#69F0AE", False))
+    elif sm_score_val <= -4.0:
+        neg_alerts.append(("🚨 CẢNH BÁO XẢ HÀNG MẠNH!",
+                            f"Điểm Smart Money: {sm_score_val:+.1f} — Tiền lớn đang phân phối / thoát hàng.",
+                            "#FF1744", True))
+    elif sm_score_val <= -2.0:
+        neg_alerts.append(("📤 Dấu hiệu xả hàng",
+                            f"Điểm Smart Money: {sm_score_val:+.1f} — OBV / CMF suy yếu.",
+                            "#FF5252", False))
+    else:
+        neu_alerts.append(("🔍 Dòng tiền lớn chưa rõ xu hướng",
+                            "Điểm Smart Money trung tính — cần thêm xác nhận từ volume.",
+                            "#FFD740"))
+
+    # 2. Từng nhóm tay chơi lớn
+    for grp_name, grp_action, grp_detail, grp_color in sm_result["groups"]:
+        if any(kw in grp_action for kw in ["GOM HÀNG", "Đang gom hàng", "Hỗ trợ đà tăng", "Mua vào"]):
+            pos_alerts.append((f"✅ {grp_name}: {grp_action}", grp_detail, grp_color, False))
+        elif any(kw in grp_action for kw in ["XẢ HÀNG", "Đang thoát", "Chốt lời", "Đè giá", "Bán tháo"]):
+            neg_alerts.append((f"⚠️ {grp_name}: {grp_action}", grp_detail, grp_color, False))
+
+    # 3. Fibonacci — vùng mua lý tưởng
+    if _in_golden_pocket:
+        pos_alerts.append(("⭐ GIÁ ĐANG TRONG GOLDEN POCKET FIBONACCI!",
+                            f"Vùng 61.8%–65.0%: {_af650:,.0f} – {_af618:,.0f} đ — Đây là vùng mua lý tưởng nhất theo Fibonacci.",
+                            "#FFA726", True))
+    elif _near_golden and _alert_isdown:
+        pos_alerts.append(("📍 Giá đang tiếp cận Golden Pocket",
+                            f"Mức Fib 61.8% tại {_af618:,.0f} đ — Chú ý theo dõi để vào lệnh.",
+                            "#FFD740", False))
+    elif _in_support_zone and _alert_isdown:
+        pos_alerts.append(("📐 Giá trong vùng hỗ trợ Fibonacci (38.2%–78.6%)",
+                            "Cổ phiếu đang về vùng hỗ trợ hợp lý, có thể cân nhắc tham gia.",
+                            "#29B6F6", False))
+
+    # 4. RSI kết hợp Smart Money
+    if _alert_rsi < 30 and sm_score_val > 0:
+        pos_alerts.append(("🟢 RSI Quá Bán + Smart Money Tích Cực",
+                            f"RSI = {_alert_rsi:.1f} (quá bán) trong khi tiền lớn vẫn mua — Xác suất đảo chiều cao.",
+                            "#00E676", True))
+    elif _alert_rsi < 40 and sm_score_val > 1.5:
+        pos_alerts.append(("🟡 RSI thấp + Dấu hiệu gom hàng",
+                            f"RSI = {_alert_rsi:.1f} — Vùng bán hơi nhiều, kết hợp tiền lớn gom = cơ hội.",
+                            "#FFD740", False))
+    elif _alert_rsi > 75 and sm_score_val < 0:
+        neg_alerts.append(("🔴 RSI Quá Mua + Smart Money Rút lui",
+                            f"RSI = {_alert_rsi:.1f} (quá mua) và dòng tiền lớn suy yếu — Rủi ro điều chỉnh.",
+                            "#FF5252", False))
+
+    # 5. OBV phân kỳ dương (Bullish Divergence)
+    if sm_result.get("obv_slope", 0) > 0.3 and pct_chg < -0.5:
+        pos_alerts.append(("📈 Phân Kỳ Dương OBV (Bullish Divergence)",
+                            "Giá giảm nhưng OBV tăng — Tiền lớn đang bí mật gom hàng ngược chiều giá. Dấu hiệu sắp đảo chiều.",
+                            "#40C4FF", True))
+
+    # 6. CMF + MFI combo
+    if sm_result.get("cmf", 0) > 0.1 and sm_result.get("mfi", 50) < 30:
+        pos_alerts.append(("💧 Dòng Tiền Mạnh ở Vùng Quá Bán",
+                            f"CMF = {sm_result['cmf']:.3f} (mua mạnh) + MFI = {sm_result['mfi']:.1f} (quá bán) — Cổ phiếu đang được gom ở vùng giá thấp.",
+                            "#00BCD4", True))
+
+    # ── Hiển thị alert banner tổng hợp ───────────────────────────────────
+    total_pos = len(pos_alerts)
+    total_neg = len(neg_alerts)
+
+    if total_pos > total_neg:
+        # Tổng quan: tích cực
+        overall_color  = "#00C853"
+        overall_bg     = "rgba(0,200,83,0.10)"
+        overall_border = "#00C853"
+        if any(a[3] for a in pos_alerts if len(a) == 4):   # có alert "critical"
+            overall_title = "🚨 PHÁT HIỆN TÍN HIỆU GOM HÀNG / VÙNG MUA HỢP LÝ — NÊN CÂN NHẮC THAM GIA"
+        else:
+            overall_title = "✅ Tín hiệu tích cực — Cổ phiếu đang về vùng mua hợp lý, có thể quan sát tích lũy"
+    elif total_neg > total_pos:
+        overall_color  = "#FF5252"
+        overall_bg     = "rgba(255,82,82,0.10)"
+        overall_border = "#FF5252"
+        overall_title  = "⚠️ Tín hiệu xả hàng / rủi ro — Thận trọng, chưa phải thời điểm mua"
+    else:
+        overall_color  = "#FFD740"
+        overall_bg     = "rgba(255,215,64,0.08)"
+        overall_border = "#FFD740"
+        overall_title  = "🔍 Tín hiệu chưa rõ ràng — Quan sát thêm trước khi hành động"
+
+    def _alert_row(icon_title, detail, color, is_critical=False):
+        bg_alpha = "0.14" if is_critical else "0.07"
+        border_left = f"4px solid {color}" if is_critical else f"2px solid {color}88"
+        return (
+            f"<div style='border-left:{border_left}; background:rgba(255,255,255,{bg_alpha}); "
+            f"border-radius:0 8px 8px 0; padding:10px 14px; margin:5px 0;'>"
+            f"<div style='font-size:0.92rem; font-weight:{'700' if is_critical else '600'}; color:{color};'>{icon_title}</div>"
+            f"<div style='font-size:0.80rem; color:#bbb; margin-top:3px; line-height:1.4;'>{detail}</div>"
+            f"</div>"
+        )
+
+    all_rows_html = ""
+    for a in pos_alerts:
+        is_crit = a[3] if len(a) == 4 else False
+        all_rows_html += _alert_row(a[0], a[1], a[2], is_crit)
+    for a in neg_alerts:
+        is_crit = a[3] if len(a) == 4 else False
+        all_rows_html += _alert_row(a[0], a[1], a[2], is_crit)
+    for a in neu_alerts:
+        all_rows_html += _alert_row(a[0], a[1], a[2], False)
+
+    st.markdown(
+        f"""
+<div style="border:2px solid {overall_border}; border-radius:14px; padding:18px 22px;
+            background:{overall_bg}; margin-bottom:16px;">
+  <div style="font-size:1.1rem; font-weight:800; color:{overall_color}; margin-bottom:12px;
+              letter-spacing:0.5px;">
+    {overall_title}
+  </div>
+  {all_rows_html}
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # ─────────────────────────────────────────────────────────────────────
     # QUICK RECOMMENDATION CARD (không cần API Key)
     # ─────────────────────────────────────────────────────────────────────
     st.markdown("---")
@@ -1163,19 +1350,21 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
     _is_down   = fib_levels.get("_is_downtrend", True)
     _fib_h     = fib_levels.get("_high", 0)
     _fib_l     = fib_levels.get("_low",  0)
-    _diff      = _fib_h - _fib_l
+    _diff      = fib_levels.get("_diff", _fib_h - _fib_l)
 
     if _is_down:
         fib_236_v  = _fib_h - 0.236 * _diff
         fib_382_v  = _fib_h - 0.382 * _diff
         fib_50_v   = _fib_h - 0.500 * _diff
         fib_618_v  = _fib_h - 0.618 * _diff
+        fib_650_v  = _fib_h - 0.650 * _diff   # Golden Pocket bottom
         fib_786_v  = _fib_h - 0.786 * _diff
     else:
         fib_236_v  = _fib_l + 0.236 * _diff
         fib_382_v  = _fib_l + 0.382 * _diff
         fib_50_v   = _fib_l + 0.500 * _diff
         fib_618_v  = _fib_l + 0.618 * _diff
+        fib_650_v  = _fib_l + 0.650 * _diff
         fib_786_v  = _fib_l + 0.786 * _diff
 
     close_now  = latest["close"]
@@ -1183,12 +1372,16 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
 
     if _is_down:
         # Downtrend: các mức Fib là HỖ TRỢ → giá gần Fib thấp = tốt để mua
-        if fib_618_v - fib_margin <= close_now <= fib_618_v + fib_margin:
+        if fib_650_v <= close_now <= fib_618_v:
+            score += 3; signal_details.append(("Fibonacci", f"Giá trong Golden Pocket ({fib_650_v:,.0f}–{fib_618_v:,.0f}) ⭐ — Vùng mua lý tưởng nhất!", "🟢"))
+        elif fib_618_v - fib_margin <= close_now <= fib_618_v + fib_margin:
             score += 2; signal_details.append(("Fibonacci", f"Giá tại Fib 61.8% ({fib_618_v:,.0f}) ✨ — Hỗ trợ vàng (Golden Ratio)", "🟢"))
         elif fib_50_v - fib_margin <= close_now <= fib_50_v + fib_margin:
             score += 1; signal_details.append(("Fibonacci", f"Giá tại Fib 50.0% ({fib_50_v:,.0f}) — Hỗ trợ tâm lý", "🟡"))
         elif fib_786_v - fib_margin <= close_now <= fib_786_v + fib_margin:
             score += 2; signal_details.append(("Fibonacci", f"Giá tại Fib 78.6% ({fib_786_v:,.0f}) — Hỗ trợ rất mạnh", "🟢"))
+        elif close_now < fib_786_v:
+            score -= 1; signal_details.append(("Fibonacci", f"Giá phá vỡ hỗ trợ 78.6% ({fib_786_v:,.0f}) — Rủi ro cao", "🔴"))
         elif close_now < fib_618_v:
             score += 1; signal_details.append(("Fibonacci", f"Giá dưới Fib 61.8% ({fib_618_v:,.0f}) — Vùng hỗ trợ sâu", "🟡"))
         elif close_now > fib_382_v:
@@ -1260,94 +1453,217 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
                     unsafe_allow_html=True,
                 )
 
-    # ── Gợi ý vùng mua / stoploss / target ──────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
+    # Vùng mua / Stop Loss / Target (Fibonacci-based)
+    # ─────────────────────────────────────────────────────────────────────
     _is_down2  = fib_levels.get("_is_downtrend", True)
     _fib_h2    = fib_levels.get("_high", 0)
     _fib_l2    = fib_levels.get("_low",  0)
-    _diff2     = _fib_h2 - _fib_l2
+    _diff2     = fib_levels.get("_diff", _fib_h2 - _fib_l2)
+    close_p    = latest["close"]
 
+    # ── Tính đầy đủ các mức Fibonacci ─────────────────────────────────────
     if _is_down2:
         _f236 = _fib_h2 - 0.236 * _diff2
         _f382 = _fib_h2 - 0.382 * _diff2
         _f50  = _fib_h2 - 0.500 * _diff2
-        _f618 = _fib_h2 - 0.618 * _diff2
+        _f618 = _fib_h2 - 0.618 * _diff2   # Golden Ratio (hỗ trợ vàng)
+        _f650 = _fib_h2 - 0.650 * _diff2   # Golden Pocket bottom
         _f786 = _fib_h2 - 0.786 * _diff2
-        # Vùng mua: dải 50%–61.8% (hỗ trợ vàng khi điều chỉnh)
-        buy_zone_low  = _f618
-        buy_zone_high = _f50
-        # Stop loss: dưới 78.6% hoặc BB_Low (lấy mức an toàn hơn)
-        sl_fib = _f786 * 0.985   # 1.5% dưới Fib 78.6%
-        sl_bb  = latest["BB_Low"]
-        stop_loss = min(sl_fib, sl_bb)
-        # Targets: giá trên hiện tại → 38.2% rồi 23.6%
-        close_p = latest["close"]
-        target1 = _f382
-        target2 = _f236
-    else:
+
+        # Vùng mua gợi ý: Golden Pocket (61.8%–65.0%) — vùng hỗ trợ lý tưởng nhất
+        # Nếu giá đã thủng Golden Pocket → mở rộng vào 78.6%
+        if close_p < _f786:
+            # Giá đã phá vỡ hỗ trợ 78.6% → rủi ro cao, không gợi ý mua
+            buy_zone_low  = None
+            buy_zone_high = None
+            zone_status   = "BROKEN"
+            zone_label    = "⛔ Giá đã phá hỗ trợ 78.6% — Tránh mua, chờ ổn định"
+            zone_color    = "#FF1744"
+        elif _f786 <= close_p <= _f650:
+            # Giá trong vùng 65%–78.6% → đây là đáy sâu, mua thận trọng
+            buy_zone_low  = _f786 * 0.99
+            buy_zone_high = _f650
+            zone_status   = "DEEP_SUPPORT"
+            zone_label    = "⚠️ Vùng hỗ trợ sâu (65%–78.6%) — Mua thận trọng, SL chặt"
+            zone_color    = "#FF9100"
+        elif _f650 <= close_p <= _f618:
+            # Giá trong Golden Pocket → vùng mua lý tưởng!
+            buy_zone_low  = _f650
+            buy_zone_high = _f618
+            zone_status   = "GOLDEN_POCKET"
+            zone_label    = "✅ GIÁ ĐANG TRONG GOLDEN POCKET — Vùng mua lý tưởng nhất!"
+            zone_color    = "#FFA726"
+        elif _f618 <= close_p <= _f382:
+            # Giá đang giữa 38.2%–61.8% → đang tiếp cận, chờ về thêm
+            buy_zone_low  = _f650
+            buy_zone_high = _f618
+            zone_status   = "APPROACHING"
+            zone_label    = f"📍 Vùng mua gợi ý: {_f650:,.0f}–{_f618:,.0f} đ — Chờ giá về thêm"
+            zone_color    = "#FFD740"
+        else:
+            # Giá vẫn cao (trên 38.2%) → chưa điều chỉnh đủ, chưa nên mua
+            buy_zone_low  = _f618
+            buy_zone_high = _f50
+            zone_status   = "WAIT"
+            zone_label    = "⏳ Chưa đến vùng mua — Chờ điều chỉnh về 50%–61.8%"
+            zone_color    = "#90CAF9"
+
+        # Stop Loss: dưới 78.6% một biên an toàn (2%) hoặc BB Lower
+        stop_loss = min(_f786 * 0.980, latest["BB_Low"])
+
+        # Targets (phục hồi từ vùng mua)
+        target1 = _f382   # Kháng cự gần (38.2%)
+        target2 = _f236   # Kháng cự xa (23.6%)
+
+        fib_direction_label = "Downtrend Retracement (Đỉnh → Đáy)"
+
+    else:  # Uptrend recovery
         _f236 = _fib_l2 + 0.236 * _diff2
         _f382 = _fib_l2 + 0.382 * _diff2
         _f50  = _fib_l2 + 0.500 * _diff2
         _f618 = _fib_l2 + 0.618 * _diff2
+        _f650 = _fib_l2 + 0.650 * _diff2
         _f786 = _fib_l2 + 0.786 * _diff2
-        # Vùng mua: ngay trên đáy tới 38.2% retracement (uptrend)
-        buy_zone_low  = _fib_l2
-        buy_zone_high = _f382
-        # Stop loss: dưới đáy
-        sl_fib = _fib_l2 * 0.985
-        sl_bb  = latest["BB_Low"]
-        stop_loss = min(sl_fib, sl_bb)
-        # Targets: 61.8% và 78.6%
-        target1 = _f618
-        target2 = _f786
 
-    # Xác định delta hiển thị (so với giá hiện tại)
-    close_p = latest["close"]
-    delta_buy  = f"{((buy_zone_high - close_p) / close_p * 100):+.1f}%" if close_p > 0 else ""
-    delta_sl   = f"{((stop_loss - close_p) / close_p * 100):+.1f}%" if close_p > 0 else ""
-    delta_tg1  = f"{((target1 - close_p) / close_p * 100):+.1f}%" if close_p > 0 else ""
-    delta_tg2  = f"{((target2 - close_p) / close_p * 100):+.1f}%" if close_p > 0 else ""
+        # Uptrend recovery: mua khi giá còn gần đáy (0%–38.2%)
+        if close_p <= _f236:
+            # Giá vẫn gần đáy → vùng mua tốt nhất
+            buy_zone_low  = _fib_l2 * 0.99
+            buy_zone_high = _f236
+            zone_status   = "NEAR_BASE"
+            zone_label    = "✅ Giá gần đáy — Vùng mua tích lũy tốt nhất"
+            zone_color    = "#00C853"
+        elif _f236 < close_p <= _f382:
+            # Đang phục hồi nhẹ (23.6%–38.2%) → còn mua được
+            buy_zone_low  = _fib_l2 * 0.99
+            buy_zone_high = _f236
+            zone_status   = "EARLY_RECOVERY"
+            zone_label    = "📍 Giai đoạn phục hồi sớm — Vùng mua gần đáy vẫn hợp lý"
+            zone_color    = "#69F0AE"
+        elif _f382 < close_p <= _f618:
+            # Phục hồi trung bình (38.2%–61.8%) → mua dè dặt, chờ pullback
+            buy_zone_low  = _f236
+            buy_zone_high = _f382
+            zone_status   = "MID_RECOVERY"
+            zone_label    = f"⚠️ Đã phục hồi 38%–61% — Chờ pullback về {_f236:,.0f}–{_f382:,.0f} đ"
+            zone_color    = "#FFD740"
+        else:
+            # Đã phục hồi mạnh (>61.8%) → không nên đuổi giá
+            buy_zone_low  = _f382
+            buy_zone_high = _f50
+            zone_status   = "EXTENDED"
+            zone_label    = "⏳ Giá đã phục hồi nhiều — Không nên mua đuổi, chờ pullback"
+            zone_color    = "#FF9100"
 
+        # Stop Loss: 2% dưới đáy hoặc BB Lower
+        stop_loss = min(_fib_l2 * 0.980, latest["BB_Low"])
+
+        # Targets
+        target1 = _f618   # Kháng cự 61.8% recovery
+        target2 = _fib_h2  # Previous High (100%)
+
+        fib_direction_label = "Uptrend Recovery (Đáy → Đỉnh)"
+
+    # ── Tính delta so với giá hiện tại ────────────────────────────────────
+    def _delta(price):
+        if close_p > 0 and price is not None:
+            return f"{((price - close_p) / close_p * 100):+.1f}%"
+        return ""
+
+    bz_low_str  = f"{buy_zone_low:,.0f}" if buy_zone_low is not None else "—"
+    bz_high_str = f"{buy_zone_high:,.0f}" if buy_zone_high is not None else "—"
+
+    # Tính R/R ratio
+    if buy_zone_high and stop_loss and target1 and buy_zone_high > stop_loss:
+        rr_risk   = buy_zone_high - stop_loss          # rủi ro = vào lệnh - stop
+        rr_reward = target1 - buy_zone_high            # lợi nhuận = target1 - vào lệnh
+        rr_ratio  = rr_reward / rr_risk if rr_risk > 0 else 0
+        rr_label  = f"R/R = 1:{rr_ratio:.1f}"
+        rr_color  = "#00C853" if rr_ratio >= 2 else ("#FFD740" if rr_ratio >= 1 else "#FF5252")
+    else:
+        rr_label = "R/R = N/A"
+        rr_color = "#999"
+
+    # ── Render card ───────────────────────────────────────────────────────
     st.markdown(
         f"""
-<div style="background:rgba(255,255,255,0.04); border-radius:12px; padding:16px 20px;
+<div style="background:rgba(255,255,255,0.04); border-radius:14px; padding:18px 22px;
             border:1px solid rgba(255,255,255,0.12); margin-bottom:12px;">
-  <div style="font-size:0.85rem; color:#aaa; margin-bottom:10px; letter-spacing:0.5px;">
-    📐 &nbsp;Fibonacci {'Retracement (Đỉnh→Đáy)' if _is_down2 else 'Recovery (Đáy→Đỉnh)'} &nbsp;·&nbsp;
-    Đỉnh <b style="color:#EF5350">{_fib_h2:,.0f}</b> đ &nbsp;·&nbsp;
-    Đáy <b style="color:#26a69a">{_fib_l2:,.0f}</b> đ &nbsp;·&nbsp;
-    Giá hiện tại <b style="color:#FFD740">{close_p:,.0f}</b> đ
+
+  <div style="font-size:0.85rem; color:#aaa; margin-bottom:4px; letter-spacing:0.4px;">
+    📐 Fibonacci {fib_direction_label} &nbsp;·&nbsp;
+    Đỉnh <b style="color:#EF5350;">{_fib_h2:,.0f}</b> đ &nbsp;·&nbsp;
+    Đáy <b style="color:#26a69a;">{_fib_l2:,.0f}</b> đ &nbsp;·&nbsp;
+    Hiện tại <b style="color:#FFD740;">{close_p:,.0f}</b> đ
   </div>
-  <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:12px;">
-    <div style="background:rgba(0,200,83,0.12); border:1px solid #00C853; border-radius:10px; padding:12px;">
-      <div style="font-size:0.75rem; color:#aaa;">📥 Vùng mua gợi ý</div>
-      <div style="font-size:1.1rem; font-weight:700; color:#00C853; margin:4px 0;">
-        {buy_zone_low:,.0f} – {buy_zone_high:,.0f}
+
+  <div style="font-size:1.0rem; font-weight:700; color:{zone_color}; padding:8px 12px;
+              background:{zone_color}22; border-radius:8px; margin:10px 0 14px 0;
+              border-left:4px solid {zone_color};">
+    {zone_label}
+  </div>
+
+  <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr 1fr; gap:10px;">
+
+    <div style="background:rgba(0,200,83,0.12); border:1px solid #00C853;
+                border-radius:10px; padding:12px;">
+      <div style="font-size:0.72rem; color:#aaa; margin-bottom:4px;">📥 Vùng Mua Gợi Ý</div>
+      <div style="font-size:1.0rem; font-weight:700; color:#00C853;">
+        {bz_low_str} – {bz_high_str} đ
       </div>
-      <div style="font-size:0.75rem; color:#888;">Fib {'61.8%→50.0%' if _is_down2 else 'Đáy→38.2%'} (vùng hỗ trợ vàng)</div>
+      <div style="font-size:0.72rem; color:#888; margin-top:4px; line-height:1.3;">
+        {'Golden Pocket 61.8%–65%' if _is_down2 and zone_status in ('GOLDEN_POCKET','APPROACHING','WAIT') else
+         ('Hỗ trợ sâu 65%–78.6%' if _is_down2 and zone_status=='DEEP_SUPPORT' else
+          ('Vùng đáy – 23.6%' if not _is_down2 and zone_status in ('NEAR_BASE','EARLY_RECOVERY') else
+           'Pullback 23.6%–38.2%'))}
+      </div>
     </div>
-    <div style="background:rgba(255,82,82,0.10); border:1px solid #FF5252; border-radius:10px; padding:12px;">
-      <div style="font-size:0.75rem; color:#aaa;">🛑 Stop Loss tham khảo</div>
-      <div style="font-size:1.1rem; font-weight:700; color:#FF5252; margin:4px 0;">
+
+    <div style="background:rgba(255,82,82,0.10); border:1px solid #FF5252;
+                border-radius:10px; padding:12px;">
+      <div style="font-size:0.72rem; color:#aaa; margin-bottom:4px;">🛑 Stop Loss</div>
+      <div style="font-size:1.0rem; font-weight:700; color:#FF5252;">
         {stop_loss:,.0f} đ
       </div>
-      <div style="font-size:0.75rem; color:#888; line-height:1.3;">
-        {delta_sl} · Min(BB Lower, Fib {'78.6%-1.5%' if _is_down2 else 'Đáy-1.5%'})
+      <div style="font-size:0.72rem; color:#888; margin-top:4px; line-height:1.3;">
+        {_delta(stop_loss)} · Min(Fib {'78.6%-2%' if _is_down2 else 'Đáy-2%'}, BB Lower)
       </div>
     </div>
-    <div style="background:rgba(33,150,243,0.10); border:1px solid #2196F3; border-radius:10px; padding:12px;">
-      <div style="font-size:0.75rem; color:#aaa;">🎯 Target 1</div>
-      <div style="font-size:1.1rem; font-weight:700; color:#2196F3; margin:4px 0;">
+
+    <div style="background:rgba(33,150,243,0.10); border:1px solid #2196F3;
+                border-radius:10px; padding:12px;">
+      <div style="font-size:0.72rem; color:#aaa; margin-bottom:4px;">🎯 Target 1 (chốt lời)</div>
+      <div style="font-size:1.0rem; font-weight:700; color:#2196F3;">
         {target1:,.0f} đ
       </div>
-      <div style="font-size:0.75rem; color:#888;">{delta_tg1} · Fib {'38.2%' if _is_down2 else '61.8%'} — kháng cự gần</div>
+      <div style="font-size:0.72rem; color:#888; margin-top:4px; line-height:1.3;">
+        {_delta(target1)} · Fib {'38.2%' if _is_down2 else '61.8%'}
+      </div>
     </div>
-    <div style="background:rgba(224,64,251,0.10); border:1px solid #E040FB; border-radius:10px; padding:12px;">
-      <div style="font-size:0.75rem; color:#aaa;">🎯 Target 2</div>
-      <div style="font-size:1.1rem; font-weight:700; color:#E040FB; margin:4px 0;">
+
+    <div style="background:rgba(224,64,251,0.10); border:1px solid #E040FB;
+                border-radius:10px; padding:12px;">
+      <div style="font-size:0.72rem; color:#aaa; margin-bottom:4px;">🎯 Target 2 (mục tiêu xa)</div>
+      <div style="font-size:1.0rem; font-weight:700; color:#E040FB;">
         {target2:,.0f} đ
       </div>
-      <div style="font-size:0.75rem; color:#888;">{delta_tg2} · Fib {'23.6%' if _is_down2 else '78.6%'} — mục tiêu xa hơn</div>
+      <div style="font-size:0.72rem; color:#888; margin-top:4px; line-height:1.3;">
+        {_delta(target2)} · Fib {'23.6%' if _is_down2 else '100% (Đỉnh cũ)'}
+      </div>
     </div>
+
+    <div style="background:rgba(255,255,255,0.05); border:1px solid {rr_color};
+                border-radius:10px; padding:12px;">
+      <div style="font-size:0.72rem; color:#aaa; margin-bottom:4px;">⚖️ Tỷ lệ Rủi ro/Lợi nhuận</div>
+      <div style="font-size:1.0rem; font-weight:700; color:{rr_color};">
+        {rr_label}
+      </div>
+      <div style="font-size:0.72rem; color:#888; margin-top:4px; line-height:1.3;">
+        {'✅ Tốt' if rr_ratio >= 2 else ('⚠️ Chấp nhận được' if rr_ratio >= 1 else '❌ Rủi ro/lợi nhuận thấp')}
+      </div>
+    </div>
+
   </div>
 </div>
 """,
