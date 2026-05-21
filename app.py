@@ -189,6 +189,288 @@ def calc_mcdx(df: pd.DataFrame) -> pd.Series:
     return ((_norm(macd_hist) + _norm(rsi - 50)) / 2).rename("MCDX")
 
 
+def calc_smart_money(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Smart Money Indicators:
+    - OBV   : On-Balance Volume — xu hướng dòng tiền lớn
+    - CMF   : Chaikin Money Flow (20) — áp lực mua/bán
+    - MFI   : Money Flow Index (14) — RSI có tính khối lượng
+    - Up/Down Volume ratio — tỷ lệ khối lượng mua/bán
+    - VSA Phase: Accumulation / Markup / Distribution / Markdown
+    """
+    close  = df["close"]
+    high   = df["high"]
+    low    = df["low"]
+    volume = df["volume"]
+    open_  = df["open"]
+
+    # ── OBV ──────────────────────────────────────────────────────────────
+    obv = [0]
+    for i in range(1, len(df)):
+        if close.iloc[i] > close.iloc[i - 1]:
+            obv.append(obv[-1] + volume.iloc[i])
+        elif close.iloc[i] < close.iloc[i - 1]:
+            obv.append(obv[-1] - volume.iloc[i])
+        else:
+            obv.append(obv[-1])
+    df["OBV"] = pd.array(obv, dtype=float)
+
+    # ── CMF (Chaikin Money Flow, 20 bars) ────────────────────────────────
+    hl = (high - low).replace(0, np.nan)
+    mfm = ((close - low) - (high - close)) / hl
+    mfv = mfm * volume
+    df["CMF"] = mfv.rolling(20).sum() / volume.rolling(20).sum()
+
+    # ── MFI (Money Flow Index, 14 bars) ──────────────────────────────────
+    tp = (high + low + close) / 3
+    rmf = tp * volume
+    pos_mf = rmf.where(tp > tp.shift(1), 0).rolling(14).sum()
+    neg_mf = rmf.where(tp < tp.shift(1), 0).rolling(14).sum()
+    df["MFI"] = 100 - 100 / (1 + pos_mf / neg_mf.replace(0, np.nan))
+
+    # ── Up / Down Volume (10 bars) ────────────────────────────────────────
+    df["Up_Vol"]   = np.where(close >= open_, volume, 0).astype(float)
+    df["Down_Vol"] = np.where(close < open_,  volume, 0).astype(float)
+    buy10  = pd.Series(df["Up_Vol"]).rolling(10).sum()
+    sell10 = pd.Series(df["Down_Vol"]).rolling(10).sum()
+    total10 = (buy10 + sell10).replace(0, np.nan)
+    df["Buy_Ratio"] = buy10 / total10   # >0.6 = mua nhiều hơn bán
+
+    # ── Vol Ratio vs MA20 ─────────────────────────────────────────────────
+    df["Vol_MA20"]  = volume.rolling(20).mean()
+    df["Vol_Ratio"] = volume / df["Vol_MA20"]
+
+    # ── Candle body ratio (body/range) ────────────────────────────────────
+    df["Body_Ratio"] = (abs(close - open_) / (high - low).replace(0, np.nan)).fillna(0)
+
+    return df
+
+
+def detect_smart_money_phase(df: pd.DataFrame) -> dict:
+    """
+    Phân tích hành vi tiền lớn dựa trên Wyckoff + VSA + OBV.
+    Trả về dict với phase, score, signals và mô tả hành vi từng nhóm.
+    """
+    win = df.tail(15).copy()   # 15 phiên gần nhất để phân tích
+    last = df.iloc[-1]
+    prev5 = df.tail(5)
+
+    # ── OBV trend (hồi quy tuyến tính) ───────────────────────────────────
+    obv_vals = win["OBV"].dropna().values
+    if len(obv_vals) > 3:
+        x = np.arange(len(obv_vals))
+        obv_slope = np.polyfit(x, obv_vals, 1)[0]
+        obv_slope_norm = obv_slope / (abs(obv_vals).mean() + 1e-9) * 10
+    else:
+        obv_slope_norm = 0
+
+    # ── Price trend 15 phiên ─────────────────────────────────────────────
+    prices = win["close"].dropna().values
+    if len(prices) > 3:
+        px = np.arange(len(prices))
+        price_slope = np.polyfit(px, prices, 1)[0]
+        price_slope_norm = price_slope / (prices.mean() + 1e-9) * 100
+    else:
+        price_slope_norm = 0
+
+    # ── Giá trị cuối ─────────────────────────────────────────────────────
+    cmf_val      = last["CMF"] if pd.notna(last["CMF"]) else 0
+    mfi_val      = last["MFI"] if pd.notna(last["MFI"]) else 50
+    buy_ratio    = last["Buy_Ratio"] if pd.notna(last["Buy_Ratio"]) else 0.5
+    vol_ratio    = last["Vol_Ratio"] if pd.notna(last["Vol_Ratio"]) else 1.0
+
+    # ── Volatility so với MA ──────────────────────────────────────────────
+    price_range_pct = (win["high"].max() - win["low"].min()) / win["close"].mean() * 100
+    is_sideways = price_range_pct < 5.0    # biên độ <5% = đi ngang
+
+    # ── Scoring phân pha ─────────────────────────────────────────────────
+    # Dương = tích lũy / đẩy giá | Âm = xả hàng / đè giá
+    score = 0.0
+    signals = []
+
+    # OBV
+    if obv_slope_norm > 0.3:
+        score += 2; signals.append(("OBV tăng", "Tiền lớn đang mua tích lũy dần", "🟢"))
+    elif obv_slope_norm < -0.3:
+        score -= 2; signals.append(("OBV giảm", "Tiền lớn đang bán/xả hàng", "🔴"))
+    else:
+        signals.append(("OBV phẳng", "Dòng tiền lớn chưa rõ xu hướng", "⚪"))
+
+    # CMF
+    if cmf_val > 0.12:
+        score += 2; signals.append(("CMF cao", f"{cmf_val:.3f} — Áp lực mua mạnh", "🟢"))
+    elif cmf_val > 0:
+        score += 1; signals.append(("CMF dương nhẹ", f"{cmf_val:.3f} — Mua nhiều hơn bán", "🟡"))
+    elif cmf_val < -0.12:
+        score -= 2; signals.append(("CMF âm mạnh", f"{cmf_val:.3f} — Áp lực bán mạnh", "🔴"))
+    else:
+        score -= 1; signals.append(("CMF âm nhẹ", f"{cmf_val:.3f} — Bán nhiều hơn mua", "🟠"))
+
+    # MFI
+    if mfi_val < 25:
+        score += 2; signals.append(("MFI quá bán", f"{mfi_val:.1f} — Dòng tiền bán cạn kiệt", "🟢"))
+    elif mfi_val > 80:
+        score -= 2; signals.append(("MFI quá mua", f"{mfi_val:.1f} — Dòng tiền mua bão hoà", "🔴"))
+    else:
+        signals.append(("MFI trung tính", f"{mfi_val:.1f}", "⚪"))
+
+    # Buy Ratio
+    if buy_ratio > 0.65:
+        score += 1.5; signals.append(("Khối lượng mua", f"{buy_ratio*100:.0f}% phiên xanh 10 kỳ", "🟢"))
+    elif buy_ratio < 0.35:
+        score -= 1.5; signals.append(("Khối lượng bán", f"{(1-buy_ratio)*100:.0f}% phiên đỏ 10 kỳ", "🔴"))
+    else:
+        signals.append(("Cân bằng mua/bán", f"{buy_ratio*100:.0f}% / {(1-buy_ratio)*100:.0f}%", "⚪"))
+
+    # Volume spike
+    if vol_ratio > 2.0:
+        if price_slope_norm > 0:
+            score += 1; signals.append(("Volume bùng nổ ↑", f"x{vol_ratio:.1f} trung bình — Cú đẩy mạnh", "🟢"))
+        else:
+            score -= 1; signals.append(("Volume bùng nổ ↓", f"x{vol_ratio:.1f} trung bình — Xả hàng ồ ạt", "🔴"))
+    elif vol_ratio < 0.5:
+        signals.append(("Volume cạn", f"x{vol_ratio:.1f} — Thị trường thiếu thanh khoản", "🟡"))
+
+    # Price vs OBV divergence
+    if price_slope_norm > 0.5 and obv_slope_norm < -0.2:
+        score -= 1.5; signals.append(("Phân kỳ âm", "Giá tăng nhưng OBV giảm — Cảnh báo xả hàng", "🔴"))
+    elif price_slope_norm < -0.5 and obv_slope_norm > 0.2:
+        score += 1.5; signals.append(("Phân kỳ dương", "Giá giảm nhưng OBV tăng — Tiền lớn đang gom", "🟢"))
+
+    # ── Xác định pha Wyckoff ──────────────────────────────────────────────
+    max_score = 10.0
+    pct = score / max_score
+
+    if pct >= 0.4:
+        phase = "GOM HÀNG"
+        icon  = "🏦"
+        color = "#00C853"
+        bg    = "rgba(0,200,83,0.10)"
+        border= "#00C853"
+        phase_desc = (
+            "Tiền lớn đang **bí mật tích lũy** cổ phiếu ở vùng giá thấp. "
+            "Giá đi ngang hoặc giảm nhẹ nhưng OBV & CMF tăng — "
+            "dấu hiệu **cá mập / quỹ đang gom**."
+        )
+    elif pct >= 0.15:
+        phase = "ĐẨY GIÁ (MARKUP)"
+        icon  = "🚀"
+        color = "#40C4FF"
+        bg    = "rgba(64,196,255,0.10)"
+        border= "#40C4FF"
+        phase_desc = (
+            "Dòng tiền lớn **đang đẩy giá lên mạnh**. "
+            "Volume tăng theo giá — đây là giai đoạn **theo xu hướng** với tiền thông minh."
+        )
+    elif pct >= -0.15:
+        phase = "TRUNG TÍNH / QUAN SÁT"
+        icon  = "🔍"
+        color = "#FFD740"
+        bg    = "rgba(255,215,64,0.08)"
+        border= "#FFD740"
+        phase_desc = (
+            "Dòng tiền lớn **chưa lộ rõ ý định**. "
+            "Cần thêm tín hiệu từ volume và OBV để xác nhận hướng đi."
+        )
+    elif pct >= -0.40:
+        phase = "XẢ HÀNG (DISTRIBUTION)"
+        icon  = "📤"
+        color = "#FF6D00"
+        bg    = "rgba(255,109,0,0.10)"
+        border= "#FF6D00"
+        phase_desc = (
+            "Tiền lớn đang **lặng lẽ phân phối/xả hàng** cho nhà đầu tư nhỏ lẻ. "
+            "Giá cao nhưng OBV & CMF bắt đầu suy yếu — **cảnh báo đỉnh vùng**."
+        )
+    else:
+        phase = "ĐÈ GIÁ (MARKDOWN)"
+        icon  = "📉"
+        color = "#FF1744"
+        bg    = "rgba(255,23,68,0.10)"
+        border= "#FF1744"
+        phase_desc = (
+            "Tiền lớn đang **đè giá và bán tháo mạnh**. "
+            "Tránh mua đuổi — chờ tín hiệu OBV/CMF phục hồi trở lại trước khi xem xét."
+        )
+
+    # ── Hành vi ước tính từng nhóm ────────────────────────────────────────
+    groups = []
+
+    # Market Maker
+    if vol_ratio > 1.5 and abs(price_slope_norm) < 0.3 and is_sideways:
+        mm_action = ("🔄 Tạo thanh khoản giả", "Tạo volume lớn nhưng giá đứng yên — kiểm soát spread")
+        mm_color  = "#FFD740"
+    elif score > 3:
+        mm_action = ("🏗️ Hỗ trợ đà tăng", "MM đang giữ bid, không để giá rơi")
+        mm_color  = "#69F0AE"
+    elif score < -3:
+        mm_action = ("🧨 Đè giá để gom rẻ hơn", "MM đẩy giá xuống trước khi mua vào")
+        mm_color  = "#FF6D00"
+    else:
+        mm_action = ("⚖️ Trung lập", "MM đang cân bằng hai phía lệnh")
+        mm_color  = "#90CAF9"
+
+    # Quỹ đầu tư
+    if obv_slope_norm > 0.5 and cmf_val > 0.05:
+        fund_action = ("📦 Đang gom hàng", "OBV + CMF đều tăng — dấu hiệu tích lũy dài hạn")
+        fund_color  = "#69F0AE"
+    elif obv_slope_norm < -0.5 and cmf_val < -0.05:
+        fund_action = ("🚪 Đang thoát hàng", "Giảm tỷ trọng — xả dần qua nhiều phiên")
+        fund_color  = "#FF5252"
+    elif buy_ratio > 0.6:
+        fund_action = ("🔍 Theo dõi tích cực", "Mua nhiều hơn bán trong 10 phiên gần đây")
+        fund_color  = "#FFD740"
+    else:
+        fund_action = ("😴 Chờ đợi", "Chưa có hành động rõ ràng")
+        fund_color  = "#90CAF9"
+
+    # Tự doanh CTCK
+    if mfi_val < 30 and cmf_val > 0:
+        td_action = ("🎯 Mua vào vùng quá bán", "Dòng tiền tự doanh vào khi MFI thấp")
+        td_color  = "#69F0AE"
+    elif mfi_val > 75 and cmf_val < 0:
+        td_action = ("🏃 Chốt lời / bán khống", "Tự doanh thoát hàng ở vùng quá mua")
+        td_color  = "#FF5252"
+    elif pct > 0.15:
+        td_action = ("📈 Theo đà tăng", "Tự doanh đang riding theo xu hướng")
+        td_color  = "#FFD740"
+    else:
+        td_action = ("🔄 Trung lập / arb", "Hoạt động arbitrage, chưa thiên hướng")
+        td_color  = "#90CAF9"
+
+    # Cá mập / Tay to
+    if pct >= 0.4:
+        shark_action = ("🐋 GOM HÀNG — Tín hiệu mạnh", "Volume bùng nổ khi giá thấp, OBV tăng ngược chiều giá")
+        shark_color  = "#00E676"
+    elif pct >= 0.15:
+        shark_action = ("🚀 ĐẨY GIÁ — Đang markup", "Cá mập đã gom xong, bắt đầu đẩy để chốt lời cao hơn")
+        shark_color  = "#40C4FF"
+    elif pct >= -0.15:
+        shark_action = ("🔍 QUAN SÁT — Chưa ra tay", "Cá mập đứng ngoài hoặc thăm dò thanh khoản")
+        shark_color  = "#FFD740"
+    elif pct >= -0.40:
+        shark_action = ("📤 XẢ HÀNG — Phân phối đỉnh", "Cá mập đang bán dần cho retail ở vùng cao")
+        shark_color  = "#FF9100"
+    else:
+        shark_action = ("📉 ĐÈ GIÁ — Bán tháo mạnh", "Tay to thoát hàng nhanh, tạo panic để mua rẻ lần sau")
+        shark_color  = "#FF1744"
+
+    groups = [
+        ("🏦 Market Maker", mm_action[0],   mm_action[1],   mm_color),
+        ("📊 Quỹ đầu tư",  fund_action[0], fund_action[1], fund_color),
+        ("🏢 Tự doanh CTCK", td_action[0], td_action[1],   td_color),
+        ("🐋 Cá mập / Tay to", shark_action[0], shark_action[1], shark_color),
+    ]
+
+    return {
+        "phase": phase, "icon": icon, "color": color, "bg": bg, "border": border,
+        "phase_desc": phase_desc, "score": score, "max_score": max_score,
+        "signals": signals, "groups": groups,
+        "obv_slope": obv_slope_norm, "cmf": cmf_val, "mfi": mfi_val,
+        "buy_ratio": buy_ratio, "vol_ratio": vol_ratio,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AI CALL FUNCTIONS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -293,6 +575,8 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
         df["Chikou"],
     ) = calc_ichimoku(df)
     fib_levels = calc_fibonacci(df)
+    df         = calc_smart_money(df)
+    sm_result  = detect_smart_money_phase(df)
 
     latest   = df.iloc[-1]
     prev     = df.iloc[-2]
@@ -570,6 +854,207 @@ if st.button("🚀 Lấy Dữ Liệu & Phân Tích AI", type="primary"):
             [{"Mức Fibonacci": k, "Giá (đ)": f"{v:,.0f}"} for k, v in fib_levels.items()]
         )
         st.dataframe(fib_df, hide_index=True, width='stretch')
+
+    # ─────────────────────────────────────────────────────────────────────
+    # SMART MONEY ANALYSIS — Hành vi tiền lớn
+    # ─────────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("🐋 Phân Tích Dòng Tiền Thông Minh — Market Maker · Quỹ · Tự Doanh · Cá Mập")
+    st.caption(
+        "Dựa trên **OBV · CMF · MFI · Volume Spread Analysis (Wyckoff)** — "
+        "phân tích hành vi ẩn của các tay chơi lớn qua dấu vết khối lượng."
+    )
+
+    # ── Phase Banner ──────────────────────────────────────────────────────
+    sm = sm_result
+    pct_bar = max(0, min(100, (sm["score"] + sm["max_score"]) / (2 * sm["max_score"]) * 100))
+    st.markdown(
+        f"""
+<div style="border:2px solid {sm['border']}; border-radius:14px; padding:20px 28px;
+            background:{sm['bg']}; margin-bottom:16px;">
+  <div style="font-size:2.0rem; font-weight:800; color:{sm['color']}; letter-spacing:2px;">
+    {sm['icon']} &nbsp; GIA ĐOẠN: {sm['phase']}
+  </div>
+  <div style="margin-top:8px; font-size:1.05rem; color:#ddd; line-height:1.6;">
+    {sm['phase_desc']}
+  </div>
+  <div style="margin-top:12px; background:rgba(255,255,255,0.08); border-radius:8px;
+              height:10px; width:100%;">
+    <div style="height:10px; width:{pct_bar:.0f}%; border-radius:8px;
+                background:linear-gradient(90deg, #ef5350, #FFD740, #00C853);"></div>
+  </div>
+  <div style="display:flex; justify-content:space-between; font-size:0.75rem;
+              color:#999; margin-top:4px;">
+    <span>📉 Đè giá / Xả</span><span>⚖️ Trung tính</span><span>📈 Gom / Đẩy</span>
+  </div>
+  <div style="margin-top:8px; font-size:0.9rem; color:#aaa;">
+    Điểm Smart Money: <b style="color:{sm['color']};">{sm['score']:+.1f} / {sm['max_score']:.0f}</b>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # ── Hành vi từng nhóm tiền lớn ───────────────────────────────────────
+    st.markdown("#### 🔬 Hành vi ước tính từng nhóm tay chơi lớn")
+    g_cols = st.columns(4)
+    for idx, (group_name, action, detail, gcolor) in enumerate(sm["groups"]):
+        with g_cols[idx]:
+            st.markdown(
+                f"""<div style="border:1px solid {gcolor}44; border-left:4px solid {gcolor};
+                                border-radius:10px; padding:14px 12px;
+                                background:{gcolor}11; height:140px;">
+  <div style="font-size:0.95rem; font-weight:700; color:{gcolor};">{group_name}</div>
+  <div style="font-size:0.88rem; font-weight:600; color:#eee; margin-top:6px;">{action}</div>
+  <div style="font-size:0.78rem; color:#aaa; margin-top:5px; line-height:1.4;">{detail}</div>
+</div>""",
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Smart Money Chart (OBV + CMF + Volume Breakdown) ─────────────────
+    with st.expander("📊 Xem biểu đồ Smart Money chi tiết (OBV · CMF · MFI · Volume Mua/Bán)"):
+        fig_sm = make_subplots(
+            rows=4, cols=1,
+            shared_xaxes=True,
+            row_heights=[0.30, 0.22, 0.22, 0.26],
+            vertical_spacing=0.04,
+            subplot_titles=(
+                "OBV — On-Balance Volume (xu hướng dòng tiền lớn)",
+                "CMF — Chaikin Money Flow (áp lực mua/bán)",
+                "MFI — Money Flow Index (RSI dòng tiền)",
+                "Volume Mua (xanh) vs Bán (đỏ) từng phiên",
+            ),
+        )
+
+        # OBV
+        obv_colors = ["#26a69a" if v >= 0 else "#ef5350"
+                      for v in df["OBV"].diff().fillna(0)]
+        fig_sm.add_trace(
+            go.Scatter(
+                x=df["time"], y=df["OBV"],
+                line=dict(color="#40C4FF", width=2),
+                fill="tozeroy", fillcolor="rgba(64,196,255,0.08)",
+                name="OBV",
+            ),
+            row=1, col=1,
+        )
+        # OBV MA20
+        fig_sm.add_trace(
+            go.Scatter(
+                x=df["time"], y=df["OBV"].rolling(20).mean(),
+                line=dict(color="#FF9800", width=1.2, dash="dash"),
+                name="OBV MA20",
+            ),
+            row=1, col=1,
+        )
+
+        # CMF
+        cmf_colors = ["#26a69a" if v >= 0 else "#ef5350"
+                      for v in df["CMF"].fillna(0)]
+        fig_sm.add_trace(
+            go.Bar(
+                x=df["time"], y=df["CMF"],
+                marker_color=cmf_colors, name="CMF",
+            ),
+            row=2, col=1,
+        )
+        fig_sm.add_hline(y=0.1,  line=dict(color="#26a69a", dash="dot", width=1), row=2, col=1)
+        fig_sm.add_hline(y=-0.1, line=dict(color="#ef5350", dash="dot", width=1), row=2, col=1)
+
+        # MFI
+        mfi_color_line = "#E040FB"
+        fig_sm.add_trace(
+            go.Scatter(
+                x=df["time"], y=df["MFI"],
+                line=dict(color=mfi_color_line, width=1.8),
+                name="MFI",
+            ),
+            row=3, col=1,
+        )
+        for level, col_ in [(80, "rgba(255,80,80,0.5)"), (20, "rgba(80,200,80,0.5)")]:
+            fig_sm.add_hline(y=level, line=dict(color=col_, dash="dash", width=1), row=3, col=1)
+
+        # Volume Mua/Bán
+        fig_sm.add_trace(
+            go.Bar(
+                x=df["time"], y=df["Up_Vol"],
+                marker_color="rgba(38,166,154,0.85)",
+                name="Volume Mua",
+            ),
+            row=4, col=1,
+        )
+        fig_sm.add_trace(
+            go.Bar(
+                x=df["time"], y=-df["Down_Vol"],
+                marker_color="rgba(239,83,80,0.85)",
+                name="Volume Bán",
+            ),
+            row=4, col=1,
+        )
+        # Vol MA20
+        fig_sm.add_trace(
+            go.Scatter(
+                x=df["time"], y=df["Vol_MA20"],
+                line=dict(color="#FFD740", width=1.2, dash="dot"),
+                name="Vol MA20",
+            ),
+            row=4, col=1,
+        )
+
+        fig_sm.update_layout(
+            template="plotly_dark",
+            height=720,
+            barmode="overlay",
+            legend=dict(orientation="h", yanchor="bottom", y=1.01,
+                        xanchor="right", x=1, font=dict(size=10)),
+            margin=dict(l=10, r=10, t=40, b=10),
+            xaxis_rangeslider_visible=False,
+        )
+        fig_sm.update_xaxes(showgrid=False)
+        fig_sm.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.06)")
+        st.plotly_chart(fig_sm, width='stretch')
+
+    # ── Signal Details ────────────────────────────────────────────────────
+    with st.expander("🔎 Chi tiết tín hiệu Smart Money từng chỉ báo"):
+        sig_cols = st.columns(2)
+        for i, (name_, detail_, dot_) in enumerate(sm["signals"]):
+            with sig_cols[i % 2]:
+                st.markdown(
+                    f"<div style='padding:8px 12px; margin:4px 0; border-radius:8px;"
+                    f"background:rgba(255,255,255,0.05);'>"
+                    f"<b>{dot_} {name_}</b><br>"
+                    f"<span style='color:#bbb; font-size:0.88rem;'>{detail_}</span></div>",
+                    unsafe_allow_html=True,
+                )
+
+    # Metric bar: key smart money indicators
+    sm_c1, sm_c2, sm_c3, sm_c4 = st.columns(4)
+    sm_c1.metric(
+        "OBV Trend",
+        f"{sm['obv_slope']:+.3f}",
+        "↑ Tích lũy" if sm["obv_slope"] > 0 else "↓ Phân phối",
+        help="Slope chuẩn hoá OBV 15 phiên — dương = tiền vào, âm = tiền ra",
+    )
+    sm_c2.metric(
+        "CMF (20)",
+        f"{sm['cmf']:.3f}",
+        "Mua trội" if sm["cmf"] > 0 else "Bán trội",
+        help="Chaikin Money Flow: >0.1 mua mạnh, <-0.1 bán mạnh",
+    )
+    sm_c3.metric(
+        "MFI (14)",
+        f"{sm['mfi']:.1f}",
+        "Quá mua 🔴" if sm["mfi"] > 80 else ("Quá bán 🟢" if sm["mfi"] < 20 else "Trung tính"),
+        help="Money Flow Index — giống RSI nhưng tính thêm khối lượng",
+    )
+    sm_c4.metric(
+        "Tỷ lệ mua/bán (10P)",
+        f"{sm['buy_ratio']*100:.0f}% / {(1-sm['buy_ratio'])*100:.0f}%",
+        "Mua trội 🟢" if sm["buy_ratio"] > 0.55 else ("Bán trội 🔴" if sm["buy_ratio"] < 0.45 else "Cân bằng"),
+        help="Tỷ lệ volume phiên xanh / đỏ trong 10 phiên gần nhất",
+    )
 
     # ─────────────────────────────────────────────────────────────────────
     # QUICK RECOMMENDATION CARD (không cần API Key)
