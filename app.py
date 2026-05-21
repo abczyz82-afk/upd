@@ -1779,18 +1779,137 @@ def call_gemini(api_key: str, prompt: str) -> str:
 # TAB 2 — MARKET SCANNER
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Danh sách cổ phiếu quét (VN30 + phổ biến)
-SCAN_UNIVERSE = [
-    # VN30
+VN30_TICKERS = [
     "ACB","BCM","BID","BVH","CTG","FPT","GAS","GVR","HDB","HPG",
     "MBB","MSN","MWG","NVL","PDR","PLX","PNJ","POW","SAB","SSI",
     "STB","TCB","TPB","VCB","VHM","VIC","VJC","VNM","VPB","VRE",
-    # Phổ biến khác
-    "DIG","DXG","HAG","HBC","HCM","HDG","HSG","KBC","KDH","LPB",
-    "NAB","NKG","NLG","OCB","REE","SHB","VCI","VGC","VIX","VND",
-    "AGR","CII","EIB","GEX","HHV","KSB","LCG","OCB","PAN","VPI",
 ]
-SCAN_UNIVERSE = sorted(set(SCAN_UNIVERSE))
+
+# Danh sách dự phòng — các mã thường xuyên đủ điều kiện (giá >10k, KLGD >200k)
+_FALLBACK_LIQUID = [
+    # Ngân hàng
+    "EIB","LPB","MSB","NAB","OCB","SHB","VIB","BVB","ABB","PGB",
+    # Chứng khoán
+    "AGR","BSI","HCM","VCI","VIX","VND","VPI","SHS","MBS","CTS",
+    # BĐS
+    "DIG","DXG","HDG","KBC","KDH","NLG","NVL","PDR","SCR","TDC",
+    "IDC","IJC","ITA","BCG","CEO","DRH","NHA","SGN","TIP","VGC",
+    # Thép / CN
+    "HSG","NKG","POM","TLH","TVN","VGS","SMC","TNA","KSB","VIS",
+    # Dầu khí / Điện
+    "BSR","OIL","PVS","PVT","DVN","PVC","PGD","GEX","PC1","REE",
+    # Bán lẻ / Tiêu dùng
+    "DGW","FRT","HAG","MML","PAN","QNS","SAF","VNM","KDC","MCH",
+    # Dệt may / Hóa chất
+    "DPM","DCM","DGC","CSV","LAS","DDV","TDN","PLC","AAA",
+    # Xây dựng / Vật liệu
+    "CII","CTD","FCN","HBC","HHV","LCG","ROS","SC5","VCG","HUT",
+    # Công nghệ / Viễn thông
+    "CMG","ELC","SAM","SPC","VGI","FOX","ITD",
+    # Khác
+    "BWE","CNG","GMD","HAH","HVN","IMP","PAC","PHR","SZC","TCH",
+    "TMP","TV2","VCS","VSH","YEG","DBC","GDT","LHG","PNJ","PVD",
+]
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def build_scan_universe() -> tuple[list[str], str]:
+    """
+    Xây dựng danh sách mã quét động:
+      - Luôn gồm VN30 (30 mã)
+      - Thêm các mã có giá > 10,000 đ VÀ KLGD trung bình ngày > 200,000 CP
+    Trả về (danh_sach_ma, mo_ta_nguon)
+    """
+    universe = set(VN30_TICKERS)
+    source_note = "VN30 (fallback)"
+
+    # ── Nguồn 1: SSI iBoard — board data HOSE ────────────────────────────
+    _ssi_urls = [
+        "https://iboard-query.ssi.com.vn/v2/stock/board-data/exchange?exchange=HOSE&size=3000",
+        "https://iboard-query.ssi.com.vn/v2/stock/snapshot?exchange=HOSE&size=3000",
+    ]
+    for _url in _ssi_urls:
+        try:
+            _h = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
+            _r = requests.get(_url, headers=_h, timeout=20)
+            if not _r.ok:
+                continue
+            _d = _r.json()
+            # Tìm list trong nhiều cấu trúc JSON khác nhau
+            _items = (
+                _d if isinstance(_d, list) else
+                _d.get("data", _d.get("items", _d.get("securities",
+                _d.get("stocks", []))))
+            )
+            if isinstance(_items, dict):
+                _items = list(_items.values())[0] if _items else []
+            _added = 0
+            for _item in (_items or []):
+                if not isinstance(_item, dict):
+                    continue
+                _sym = str(
+                    _item.get("symbol", _item.get("code",
+                    _item.get("ticker", _item.get("s", ""))))
+                ).upper().strip()
+                if not _sym or len(_sym) > 4 or not _sym.isalpha():
+                    continue
+                # Giá — SSI có thể trả về đơn vị nghìn đồng hoặc đồng
+                _pr = float(_item.get("lastPrice",
+                            _item.get("closePrice",
+                            _item.get("close",
+                            _item.get("mp", _item.get("cp", 0))))) or 0)
+                _price = _pr if _pr >= 1000 else _pr * 1000
+                # Khối lượng — lấy tổng khớp trong ngày
+                _vol = float(_item.get("totalVolume",
+                             _item.get("totalMatchVolume",
+                             _item.get("tradingVolume",
+                             _item.get("tv", _item.get("mv", 0))))) or 0)
+                if _price > 10000 and _vol > 200000:
+                    universe.add(_sym)
+                    _added += 1
+            if _added > 0:
+                source_note = f"SSI iBoard ({_added} mã lọc được, HOSE)"
+                break
+        except Exception:
+            continue
+
+    # ── Nguồn 2: DNSE market snapshot ────────────────────────────────────
+    if len(universe) <= len(VN30_TICKERS):
+        _dnse_urls = [
+            "https://services.entrade.com.vn/dnse-market-service/stocks?exchange=HOSE&limit=2000",
+            "https://services.entrade.com.vn/dnse-order-service/exchange-securities?exchange=HOSE",
+        ]
+        for _url in _dnse_urls:
+            try:
+                _r = requests.get(_url, timeout=15)
+                if not _r.ok:
+                    continue
+                _d = _r.json()
+                _items = _d if isinstance(_d, list) else _d.get("data", _d.get("items", []))
+                _added = 0
+                for _item in (_items or []):
+                    if not isinstance(_item, dict):
+                        continue
+                    _sym = str(_item.get("symbol", _item.get("code", _item.get("ticker", "")))).upper().strip()
+                    if not _sym or len(_sym) > 4 or not _sym.isalpha():
+                        continue
+                    _pr = float(_item.get("lastPrice", _item.get("closePrice", _item.get("close", 0))) or 0)
+                    _price = _pr if _pr >= 1000 else _pr * 1000
+                    _vol = float(_item.get("totalVolume", _item.get("volume", 0)) or 0)
+                    if _price > 10000 and _vol > 200000:
+                        universe.add(_sym)
+                        _added += 1
+                if _added > 0:
+                    source_note = f"DNSE ({_added} mã lọc được)"
+                    break
+            except Exception:
+                continue
+
+    # ── Fallback: danh sách tuyển thủ cố định ────────────────────────────
+    if len(universe) <= len(VN30_TICKERS):
+        universe.update(_FALLBACK_LIQUID)
+        source_note = f"VN30 + danh sách dự phòng ({len(_FALLBACK_LIQUID)} mã)"
+
+    return sorted(universe), source_note
 
 
 @st.cache_data(ttl=300)
@@ -1925,6 +2044,7 @@ def scan_single_stock(symbol: str) -> dict | None:
             "mfi":            sm_result.get("mfi", 50),
             "buy_ratio":      sm_result.get("buy_ratio", 0.5),
             "vol_ratio":      sm_result.get("vol_ratio", 1.0),
+            "avg_vol":        float(latest.get("Vol_MA20", 0) or 0),
         }
     except Exception:
         return None
@@ -1938,21 +2058,47 @@ def _phase_order(phase: str) -> int:
 
 with _tab2:
     st.subheader("🔍 Quét Toàn Thị Trường — Phát Hiện Hành Vi Tiền Lớn")
+
+    # ── Tải danh sách động ────────────────────────────────────────────────
+    with st.spinner("🔄 Đang tải danh sách cổ phiếu từ thị trường..."):
+        _auto_universe, _source_note = build_scan_universe()
+
     st.caption(
-        f"Tự động quét **{len(SCAN_UNIVERSE)} mã cổ phiếu** (VN30 + phổ biến) · "
-        "Phân loại theo pha: Gom hàng · Đẩy giá · Xả hàng · Đè giá · Vùng mua hợp lý"
+        f"📡 Nguồn: **{_source_note}** · "
+        f"Lọc: giá > 10,000 đ · KLGD trung bình > 200,000 CP/ngày · "
+        f"**{len(_auto_universe)} mã** sẽ được quét"
     )
 
-    # Custom ticker list
-    with st.expander("⚙️ Tùy chỉnh danh sách cổ phiếu cần quét"):
+    # Hiển thị badges tóm tắt nguồn
+    _vn30_in = [t for t in VN30_TICKERS if t in _auto_universe]
+    _extra_in = [t for t in _auto_universe if t not in VN30_TICKERS]
+    _b1, _b2, _b3 = st.columns(3)
+    _b1.metric("🏆 VN30 (luôn bao gồm)", len(_vn30_in), "mã")
+    _b2.metric("📈 Mã thêm (giá>10k + KL>200k)", len(_extra_in), "mã")
+    _b3.metric("🔢 Tổng mã quét", len(_auto_universe), "mã")
+
+    # Tùy chỉnh danh sách
+    with st.expander("⚙️ Xem & chỉnh sửa danh sách quét"):
+        st.caption("💡 Danh sách tự động cập nhật 30 phút/lần. Bạn có thể thêm/bớt mã bên dưới.")
+        _col_vn30, _col_extra = st.columns(2)
+        with _col_vn30:
+            st.markdown("**🏆 VN30:**")
+            st.code(", ".join(sorted(_vn30_in)), language=None)
+        with _col_extra:
+            st.markdown(f"**📈 Mã lọc thêm ({len(_extra_in)} mã):**")
+            st.code(", ".join(sorted(_extra_in)) if _extra_in else "(chưa có)", language=None)
+
         custom_input = st.text_area(
-            "Nhập danh sách mã (cách nhau bởi dấu phẩy hoặc xuống dòng):",
-            value=", ".join(SCAN_UNIVERSE),
-            height=120,
+            "✏️ Chỉnh sửa danh sách (dấu phẩy hoặc xuống dòng):",
+            value=", ".join(_auto_universe),
+            height=130,
         )
-        extra_tickers = [t.strip().upper() for t in custom_input.replace("\n",",").split(",") if t.strip()]
-        scan_list = sorted(set(extra_tickers)) if extra_tickers else SCAN_UNIVERSE
-        st.info(f"📋 Sẽ quét **{len(scan_list)} mã**.")
+        _custom_parsed = [t.strip().upper() for t in custom_input.replace("\n", ",").split(",") if t.strip()]
+        scan_list = sorted(set(_custom_parsed)) if _custom_parsed else _auto_universe
+        st.info(f"📋 Sẽ quét **{len(scan_list)} mã** sau khi chỉnh sửa.")
+
+    if "scan_list" not in dir():
+        scan_list = _auto_universe
 
     # Filter options
     col_f1, col_f2, col_f3 = st.columns(3)
@@ -1982,6 +2128,7 @@ with _tab2:
 
     if st.button("🚀 Chạy Quét Thị Trường", type="primary", key="scan_btn"):
         results = []
+        skipped_criteria = 0
         progress_bar = st.progress(0, text="Đang quét thị trường...")
         status_text  = st.empty()
 
@@ -1989,7 +2136,21 @@ with _tab2:
             status_text.markdown(f"⏳ Đang phân tích **{sym}** ({i+1}/{len(scan_list)})...")
             res = scan_single_stock(sym)
             if res:
-                results.append(res)
+                # ── Lọc lần 2 sau khi có dữ liệu thực ──
+                # Kiểm tra giá > 10,000 đ
+                price_ok = res["close"] > 10000
+                # Kiểm tra KLGD trung bình ngày > 200,000 CP
+                # vol_ratio = vol / vol_ma20, nên vol_ma20 ~ latest_vol / vol_ratio
+                # Dùng vol_ratio > 0 nghĩa là vol_ma20 tồn tại; ta cần vol_ma20 > 200k
+                # Ta lưu thêm avg_vol vào scan_single_stock — xem bên dưới
+                avg_vol_ok = res.get("avg_vol", 0) > 200000
+                # VN30 luôn được giữ bất kể bộ lọc
+                is_vn30 = sym in VN30_TICKERS
+
+                if is_vn30 or (price_ok and avg_vol_ok):
+                    results.append(res)
+                else:
+                    skipped_criteria += 1
             progress_bar.progress((i + 1) / len(scan_list), text=f"Đã quét {i+1}/{len(scan_list)} mã")
 
         progress_bar.empty()
@@ -1998,6 +2159,12 @@ with _tab2:
         if not results:
             st.error("❌ Không quét được dữ liệu. Kiểm tra kết nối mạng.")
             st.stop()
+
+        _q1, _q2, _q3 = st.columns(3)
+        _q1.success(f"✅ Quét thành công **{len(results)} mã**")
+        _q2.info(f"🔍 Danh sách đã quét: **{len(scan_list)} mã**")
+        if skipped_criteria:
+            _q3.warning(f"⚠️ Loại do không đủ điều kiện (giá/KL): **{skipped_criteria} mã**")
 
         # Sort by phase order then score desc
         results.sort(key=lambda x: (_phase_order(x["sm_phase"]), -x["score"]))
@@ -2096,6 +2263,7 @@ with _tab2:
                         "Mã":           r["symbol"],
                         "Giá (đ)":      f"{r['close']:,.0f}",
                         "% 1P":         f"{r['pct_chg']:+.2f}%",
+                        "KL TB ngày":   f"{r['avg_vol']:,.0f}",
                         "RSI":          f"{r['rsi']:.1f}",
                         "MACD":         macd_str,
                         "MCDX":         f"{r['mcdx']:.3f}",
@@ -2162,6 +2330,7 @@ with _tab2:
                     "Mã":           r["symbol"],
                     "Giá (đ)":      f"{r['close']:,.0f}",
                     "% 1P":         f"{r['pct_chg']:+.2f}%",
+                    "KL TB ngày":   f"{r['avg_vol']:,.0f}",
                     "RSI":          f"{r['rsi']:.1f}",
                     "Smart Money":  f"{r['sm_icon']} {r['sm_phase']}",
                     "Điểm SM":      f"{r['sm_score']:+.1f}",
@@ -2187,6 +2356,7 @@ with _tab2:
                     "Mã":           r["symbol"],
                     "Giá (đ)":      f"{r['close']:,.0f}",
                     "% 1P":         f"{r['pct_chg']:+.2f}%",
+                    "KL TB ngày":   f"{r['avg_vol']:,.0f}",
                     "RSI":          f"{r['rsi']:.1f}",
                     "Pha":          f"{r['sm_icon']} {r['sm_phase']}",
                     "Điểm SM":      f"{r['sm_score']:+.1f}",
