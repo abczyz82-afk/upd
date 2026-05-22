@@ -161,6 +161,10 @@ def get_clean_stock_data(symbol: str) -> pd.DataFrame | None:
                                "open": resp["o"], "high": resp["h"],
                                "low": resp["l"], "close": resp["c"], "volume": resp["v"]})
             df["time"] = df["time"].dt.strftime("%Y-%m-%d")
+            # entrade trả về giá đơn vị nghìn đồng → nhân 1000
+            for col in ["open", "high", "low", "close"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce") * 1000
+            df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
             return df
     except Exception:
         pass
@@ -177,9 +181,12 @@ def get_clean_stock_data(symbol: str) -> pd.DataFrame | None:
                                     "low": "low", "close": "close", "volume": "volume"})
             if "time" in df.columns:
                 df["time"] = pd.to_datetime(df["time"]).dt.strftime("%Y-%m-%d")
-            for col in ["open", "high", "low", "close", "volume"]:
+            # TCBS trả về giá đơn vị nghìn đồng → nhân 1000
+            for col in ["open", "high", "low", "close"]:
                 if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                    df[col] = pd.to_numeric(df[col], errors="coerce") * 1000
+            if "volume" in df.columns:
+                df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
             df = df.sort_values("time").reset_index(drop=True)
             return df[["time", "open", "high", "low", "close", "volume"]]
     except Exception:
