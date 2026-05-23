@@ -11,6 +11,11 @@ from ta.momentum import RSIIndicator
 from ta.volatility import BollingerBands
 from ta.trend import MACD
 
+# TODO: Tích hợp logic tính toán RSI và MACD cho dữ liệu VN30F1M
+def analyze_trend(data):
+    print("Đang phân tích xu hướng thị trường...")
+    return True
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
