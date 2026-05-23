@@ -25,77 +25,20 @@ VN30_TICKERS = [
     "STB","TCB","TPB","VCB","VHM","VIC","VJC","VNM","VPB","VRE",
 ]
 
-# Danh sách cổ phiếu toàn thị trường (HOSE + HNX + UPCOM)
+# Danh sách cổ phiếu quét — do người dùng chỉ định (cập nhật 23/05/2026)
 _FULL_STOCK_UNIVERSE = sorted(set([
-    # ── VN30 ──
-    "ACB","BCM","BID","BVH","CTG","FPT","GAS","GVR","HDB","HPG","MBB","MSN",
-    "MWG","NVL","PDR","PLX","PNJ","POW","SAB","SSI","STB","TCB","TPB","VCB",
-    "VHM","VIC","VJC","VNM","VPB","VRE",
-    # ── HOSE ──
-    "AAA","AAM","AAT","ABB","ABS","ABT","ACG","ACL","ACM","ACT","ADC","AGG",
-    "AGM","AGR","AHP","AIS","ALP","ALT","AMD","AMV","ANT","ANV","APG","APH",
-    "APP","APT","ASG","ASM","ASP","BAF","BAL","BAX","BBC","BCG","BDB","BFC",
-    "BHN","BIC","BII","BKC","BLN","BMC","BMP","BNA","BSI","BSR","BTP","BTV",
-    "BVB","BVG","BVL","BWE","C4G","CAP","CAV","CCL","CEO","CHP","CII","CKG",
-    "CMC","CMG","CMV","CMX","CNG","CNT","COM","CRC","CSC","CSM","CSV","CTC",
-    "CTD","CTF","CTI","CTR","CTS","CVT","D2D","DAG","DAH","DAT","DBC","DCG",
-    "DCL","DCM","DIG","DLG","DLT","DMC","DPG","DPM","DPS","DQC","DRC","DRH",
-    "DSC","DTA","DTC","DXG","DXS","EIB","ELC","EMC","EVE","EVF","EVG","EVS",
-    "FIR","FIT","FLC","FMC","FRT","GDT","GEE","GEG","GEX","GMD","GPH","GRI",
-    "GSP","GTD","HAG","HAH","HAP","HAR","HAS","HAX","HBC","HCM","HDC","HDG",
-    "HHP","HHS","HII","HLD","HMC","HNG","HPT","HPX","HQC","HRC","HSG","HU1",
-    "HU3","HU6","HVN","HVT","ICT","IDC","IDI","IJC","IMP","INN","IPA","ITA",
-    "ITC","JVC","KBC","KDC","KDH","KHD","KLF","KLS","KPF","KSB","KSH","KST",
-    "LAF","LAS","LBM","LCG","LDG","LEC","LGC","LHG","LIX","LMH","LSS","LTC",
-    "MCG","MCH","MCM","MCP","MDC","MDG","MIG","MIM","NAB","NAF","NAV","NBC",
-    "NBT","NET","NHA","NHH","NKG","NLG","NPT","NRC","NSC","NTB","NTC","NVT",
-    "OIL","OCB","OGC","OMH","PAC","PAN","PCC","PCG","PCT","PDN","PET","PGB",
-    "PGD","PHR","PIC","PIT","PLC","PLX","PNJ","POW","PRC","PRE","PSH","PTC",
-    "PVD","PVI","PVS","PVT","QCG","QNS","RAL","RCL","REE","ROS","SAF","SAM",
-    "SAV","SBA","SC5","SCD","SCG","SCR","SDC","SDG","SDN","SFC","SFG","SFI",
-    "SGN","SGR","SGT","SHB","SHI","SHP","SHS","SII","SKG","SLG","SMB","SMC",
-    "SNG","SPM","SRC","SRF","SRT","SSC","SSF","STA","STG","STK","STP","SVC",
-    "SVI","SVN","SVT","SZC","TBC","TCH","TCM","TCO","TDC","TDG","TDH","TDM",
-    "TDN","TDT","TEG","TGG","THD","TIE","TIG","TIP","TIX","TJC","TLG","TLH",
-    "TMS","TNA","TNC","TNH","TNI","TNT","TON","TPC","TPL","TRA","TRC","TSC",
-    "TTA","TTF","TTH","TTP","TV2","TVB","TVD","TVS","TVT","UDC","UIC","VAB",
-    "VCF","VCG","VCI","VDL","VDS","VGC","VGG","VGI","VGS","VHC","VHG","VIB",
-    "VID","VIE","VIG","VIM","VIP","VIS","VIX","VKC","VKD","VLB","VMP","VMR",
-    "VNA","VNC","VND","VNE","VNF","VNG","VNI","VNL","VNR","VNS","VNX","VOC",
-    "VOS","VPC","VPD","VPG","VPH","VPK","VPL","VPS","VRC","VSC","VSD","VSH",
-    "VSI","VST","VTC","VTG","VTK","VTL","VTM","VTO","VTS","VTV","VXB","WCS",
-    "WSS","YBC","YEG",
-    # ── Midcap / Smallcap thêm ──
-    "AGF","AGL","AGX","BCA","BCC","BCI","BCM","BDB","BDT","BHT","BLF","BLT",
-    "BMT","BNW","BPC","BSC","BTT","BUI","BVN","BVS","CAD","CBD","CCI","CDN",
-    "CEL","CEN","CHC","CJC","CKG","CML","CNA","CNC","CNN","CTN","CTW","D11",
-    "DAD","DAL","DAP","DBD","DBT","DDD","DDG","DDL","DDV","DGC","DGW","DHA",
-    "DHB","DHC","DHG","DHT","DIC","DL1","DNC","DND","DNH","DNL","DNM","DNP",
-    "DNT","DNW","DPS","DPT","DRC","DSN","DST","DTB","DTE","DTG","DTI","DTL",
-    "DTM","DTP","DTS","DTT","DTV","DUS","DVD","DVG","DVN","DWT","DXL","DZM",
-    "EBS","EFI","EIC","EMG","EMS","EPH","ETC","FBC","FCN","FDC","FGL","FHG",
-    "FID","FIV","FNA","FRC","FRM","GAB","GIC","GIL","GKM","GLT","GMH","GPC",
-    "GPN","GRS","HAD","HAI","HCC","HEV","HFX","HGM","HIO","HLG","HLT","HLY",
-    "HNA","HNI","HOT","HPT","HSL","HT1","HTC","HTI","HTL","HTM","HTN","HTP",
-    "HTV","HXB","HYI","ICF","ICG","IDJ","IDV","IHK","ILA","ILB","INA","IPC",
-    "IRC","ITD","ITQ","ITW","KGM","KHP","KKC","KLB","KLS","KMR","KSF","KTT",
-    "KVC","L10","L14","L18","L35","L43","L44","L61","L62","LAF","LCD","LCM",
-    "LEC","LIC","LIG","LM3","LMI","LNC","LQN","LUT","MAC","MAF","MBA","MBS",
-    "MCC","MEC","MHC","MKP","MML","MNC","MPT","MRF","MST","MTG","MTP","MVB",
-    "MVN","NAG","NAP","NAT","NAW","NBB","NCT","NEL","NFL","NHT","NLC","NLS",
-    "NMT","NNC","NQB","NST","NTA","NTH","NTP","NTT","NTW","NUE","NVB","OHL",
-    "OPC","PAB","PBC","PFC","PGC","PGI","PGS","PGV","PHC","PHN","PIV","PKG",
-    "PMG","PMP","PNC","PNG","POB","POV","PPC","PPI","PPP","PTG","PTL","PTS",
-    "PTX","PVB","PVC","PVG","PVL","PVV","PXL","PXS","PXT","QBC","QHD","QST",
-    "QTC","RIC","RLC","RPH","RTC","S4A","S55","S96","S99","SAP","SBB","SBT",
-    "SDT","SGD","SGI","SGO","SIC","SK","SLA","SRC","SRF","SSC","SSF","TAC",
-    "TAR","TAS","TAW","TCL","TCR","TCT","TCW","TET","TGN","THL","THP","THT",
-    "TID","TJC","TKC","TKU","TON","TPH","TPP","TQN","TRS","TST","TTB","TTE",
-    "TTS","TV1","TV3","TV4","TVH","UNI","UPC","V11","V12","VAC","VCA","VCR",
-    "VDB","VDC","VFG","VFR","VGP","VGT","VHD","VKB","VLP","VMC","VNB","VNX",
-    "VOC","VPK","VSD","VSP","VTJ","VXP","BCE","CCI","DPG","FPT","GMD","HAH",
-    "HCM","IDC","KDH","MBB","NLG","PVS","REE","SZC","TCB","VCI","VIX","VND",
+    "VIX","VND","SHB","GEX","HPG","SSI","MSB","MBB","CII","NVL",
+    "PC1","BSR","DXG","FPT","ACB","VCI","HCM","PDR","CTG","HSG",
+    "VCB","VPB","HDB","VRE","TCB","VHM","POW","BID","DIG","MWG",
+    "VNM","EIB","TPB","KDH","STB","ORS","TCH","VIC","PLX","VSC",
+    "PVD","EVF","VCG","VCK","IJC","HHV","GVR","GEL","PVT","TCX",
+    "DXS","DPM","MSN","HDG","VIB","KBC","VPI","NLG","PAN","GEE",
+    "VPX","DCM","DGC","HHS","HAG","HDC","CTS","PET","VJC","OCB",
+    "PNJ","SAB","VTP","DGW","GMD","CTR","REE","CTD","DSE","SHS",
+    "CEO","MBS","PVS","PVC",
 ]));
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
@@ -161,10 +104,6 @@ def get_clean_stock_data(symbol: str) -> pd.DataFrame | None:
                                "open": resp["o"], "high": resp["h"],
                                "low": resp["l"], "close": resp["c"], "volume": resp["v"]})
             df["time"] = df["time"].dt.strftime("%Y-%m-%d")
-            # entrade trả về giá đơn vị nghìn đồng → nhân 1000
-            for col in ["open", "high", "low", "close"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce") * 1000
-            df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
             return df
     except Exception:
         pass
@@ -181,12 +120,9 @@ def get_clean_stock_data(symbol: str) -> pd.DataFrame | None:
                                     "low": "low", "close": "close", "volume": "volume"})
             if "time" in df.columns:
                 df["time"] = pd.to_datetime(df["time"]).dt.strftime("%Y-%m-%d")
-            # TCBS trả về giá đơn vị nghìn đồng → nhân 1000
-            for col in ["open", "high", "low", "close"]:
+            for col in ["open", "high", "low", "close", "volume"]:
                 if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce") * 1000
-            if "volume" in df.columns:
-                df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
             df = df.sort_values("time").reset_index(drop=True)
             return df[["time", "open", "high", "low", "close", "volume"]]
     except Exception:
@@ -1133,6 +1069,11 @@ def scan_single_stock(symbol: str) -> dict | None:
             if col in df.columns: df[col]=pd.to_numeric(df[col],errors="coerce")
         df=df.dropna(subset=["close"]).reset_index(drop=True)
         if len(df)<30: return None
+
+        # ── Lọc cổ phiếu có giá < 10,000 VND ──────────────────────────────
+        latest_close = pd.to_numeric(df["close"].iloc[-1], errors="coerce")
+        if pd.isna(latest_close) or latest_close < 10000:
+            return None
 
         df["RSI"]        =RSIIndicator(close=df["close"],window=14).rsi()
         bb               =BollingerBands(close=df["close"],window=20,window_dev=2)
