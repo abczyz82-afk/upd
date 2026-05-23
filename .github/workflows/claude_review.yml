@@ -1,0 +1,44 @@
+name: Claude AI Code Review
+
+# Kích hoạt khi có PR mới mở ra hoặc code trong PR được cập nhật
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write # Cần quyền này để GitHub CLI có thể comment
+      contents: read
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Quan trọng: Lấy toàn bộ lịch sử để so sánh diff
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Cài đặt thư viện
+        run: pip install anthropic
+
+      - name: Lấy dữ liệu thay đổi (Git Diff)
+        run: |
+          # So sánh nhánh hiện tại với nhánh gốc để lấy ra những dòng code bạn vừa viết/sửa
+          git diff origin/${{ github.base_ref }} HEAD > pr_diff.txt
+
+      - name: Chạy kịch bản AI Review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python .github/scripts/review.py
+
+      - name: Đăng kết quả lên Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Dùng GitHub CLI để tự động post nội dung text thành comment
+          gh pr comment ${{ github.event.pull_request.number }} --body-file review_result.txt
