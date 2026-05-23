@@ -599,67 +599,120 @@ def calc_wyckoff_events(df):
     return {"events": events, "phase": phase, "phase_desc": phase_desc, "score": score}
 
 
-def calc_hidden_divergence(df, window=35):
-    """Regular + Hidden Divergence detection on RSI."""
+def calc_hidden_divergence(df, window=40):
+    """Regular + Hidden Divergence detection on RSI.
+
+    Fixes:
+    - window tăng lên 40 để bắt được nhiều swing hơn
+    - find_swings dùng range(3, n-3) tránh index out-of-range khi n nhỏ
+    - nearest max_dist tăng lên 10 để map được swing giá ↔ RSI chính xác hơn
+    - Tách riêng reg_bear và hid_bear (không dùng cùng elif) để phát hiện đồng thời
+    - Thêm kiểm tra p1i != p2i để tránh cùng một swing
+    """
     default = {"reg_bull": False, "reg_bear": False,
                "hid_bull": False, "hid_bear": False,
                "signals": [], "score": 0}
-    if len(df) < window or "RSI" not in df.columns:
+    if len(df) < 20 or "RSI" not in df.columns:
         return default
-    recent = df.tail(window).reset_index(drop=True)
+
+    # Dùng min(window, len(df)) để không bị lỗi khi dữ liệu ít
+    use_window = min(window, len(df))
+    recent = df.tail(use_window).reset_index(drop=True)
     prices = recent["close"].values
     rsi    = recent["RSI"].fillna(50).values
     n      = len(prices)
 
-    def find_swings(arr, is_high):
+    if n < 7:
+        return default
+
+    def find_swings(arr, is_high, strength=1):
+        """Tìm swing high/low với strength bước xác nhận (mặc định 1 nến 2 phía)."""
         out = []
-        for i in range(2, n - 2):
+        s = max(1, strength)
+        for i in range(s * 2, n - s * 2):
             if is_high:
-                if arr[i] > arr[i-1] and arr[i] > arr[i-2] and arr[i] > arr[i+1] and arr[i] > arr[i+2]:
-                    out.append((i, arr[i]))
+                if all(arr[i] > arr[i - k] for k in range(1, s + 1)) and \
+                   all(arr[i] > arr[i + k] for k in range(1, s + 1)):
+                    out.append((i, float(arr[i])))
             else:
-                if arr[i] < arr[i-1] and arr[i] < arr[i-2] and arr[i] < arr[i+1] and arr[i] < arr[i+2]:
-                    out.append((i, arr[i]))
+                if all(arr[i] < arr[i - k] for k in range(1, s + 1)) and \
+                   all(arr[i] < arr[i + k] for k in range(1, s + 1)):
+                    out.append((i, float(arr[i])))
         return out
 
-    ph = find_swings(prices, True);  pl = find_swings(prices, False)
-    rh = find_swings(rsi, True);     rl = find_swings(rsi, False)
+    # Thử strength=2 trước (ít nhiễu hơn), fallback strength=1 nếu không đủ swing
+    ph = find_swings(prices, True,  2) or find_swings(prices, True,  1)
+    pl = find_swings(prices, False, 2) or find_swings(prices, False, 1)
+    rh = find_swings(rsi,    True,  1)
+    rl = find_swings(rsi,    False, 1)
 
-    def nearest(p_idx, swings, max_dist=6):
-        near = [(i, v) for i, v in swings if abs(i - p_idx) <= max_dist]
-        return near[-1] if near else None
+    def nearest_rsi_swing(p_idx, rsi_swings, max_dist=10):
+        """Tìm RSI swing gần nhất với giá swing tại p_idx."""
+        candidates = [(i, v) for i, v in rsi_swings if abs(i - p_idx) <= max_dist]
+        if not candidates:
+            return None
+        # Ưu tiên swing gần nhất
+        return min(candidates, key=lambda x: abs(x[0] - p_idx))
 
-    signals = []; reg_bull = reg_bear = hid_bull = hid_bear = False; score = 0
+    signals = []
+    reg_bull = reg_bear = hid_bull = hid_bear = False
+    score = 0
 
+    # ── Bearish divergences (từ swing HIGHS) ────────────────────────────────
     if len(ph) >= 2:
-        p1i, p1v = ph[-2]; p2i, p2v = ph[-1]
-        r1 = nearest(p1i, rh); r2 = nearest(p2i, rh)
-        if r1 and r2:
-            if p2v > p1v and r2[1] < r1[1]:
-                reg_bear = True; score -= 2
+        for idx in range(len(ph) - 1, 0, -1):
+            p2i, p2v = ph[idx]
+            p1i, p1v = ph[idx - 1]
+            if p1i == p2i:
+                continue
+            r1 = nearest_rsi_swing(p1i, rh)
+            r2 = nearest_rsi_swing(p2i, rh)
+            if r1 is None or r2 is None:
+                continue
+            # Regular Bearish: Giá HH nhưng RSI LH
+            if p2v > p1v and r2[1] < r1[1] and not reg_bear:
+                reg_bear = True
+                score -= 2
                 signals.append(("📉 Regular Bearish Div",
-                                 f"Giá HH ({p2v:,.0f}>{p1v:,.0f}) nhưng RSI LH ({r2[1]:.1f}<{r1[1]:.1f}) → Đỉnh phân kỳ",
+                                 f"Giá HH ({p2v:,.0f}>{p1v:,.0f}) nhưng RSI LH ({r2[1]:.1f}<{r1[1]:.1f}) → Đỉnh phân kỳ, cảnh báo đảo chiều giảm",
                                  "bearish"))
-            if p2v < p1v and r2[1] > r1[1]:
-                hid_bear = True; score -= 3
+            # Hidden Bearish: Giá LH nhưng RSI HH
+            if p2v < p1v and r2[1] > r1[1] and not hid_bear:
+                hid_bear = True
+                score -= 3
                 signals.append(("🔒 Hidden Bearish Div",
-                                 f"Giá LH ({p2v:,.0f}<{p1v:,.0f}) RSI HH ({r2[1]:.1f}>{r1[1]:.1f}) → Tiếp tục giảm",
+                                 f"Giá LH ({p2v:,.0f}<{p1v:,.0f}) RSI HH ({r2[1]:.1f}>{r1[1]:.1f}) → Tiếp tục downtrend",
                                  "bearish"))
+            if reg_bear and hid_bear:
+                break
 
+    # ── Bullish divergences (từ swing LOWS) ─────────────────────────────────
     if len(pl) >= 2:
-        p1i, p1v = pl[-2]; p2i, p2v = pl[-1]
-        r1 = nearest(p1i, rl); r2 = nearest(p2i, rl)
-        if r1 and r2:
-            if p2v < p1v and r2[1] > r1[1]:
-                reg_bull = True; score += 2
+        for idx in range(len(pl) - 1, 0, -1):
+            p2i, p2v = pl[idx]
+            p1i, p1v = pl[idx - 1]
+            if p1i == p2i:
+                continue
+            r1 = nearest_rsi_swing(p1i, rl)
+            r2 = nearest_rsi_swing(p2i, rl)
+            if r1 is None or r2 is None:
+                continue
+            # Regular Bullish: Giá LL nhưng RSI HL
+            if p2v < p1v and r2[1] > r1[1] and not reg_bull:
+                reg_bull = True
+                score += 2
                 signals.append(("📈 Regular Bullish Div",
-                                 f"Giá LL ({p2v:,.0f}<{p1v:,.0f}) nhưng RSI HL ({r2[1]:.1f}>{r1[1]:.1f}) → Đáy phân kỳ",
+                                 f"Giá LL ({p2v:,.0f}<{p1v:,.0f}) nhưng RSI HL ({r2[1]:.1f}>{r1[1]:.1f}) → Đáy phân kỳ, tiềm năng đảo chiều tăng",
                                  "bullish"))
-            if p2v > p1v and r2[1] < r1[1]:
-                hid_bull = True; score += 3
+            # Hidden Bullish: Giá HL nhưng RSI LL
+            if p2v > p1v and r2[1] < r1[1] and not hid_bull:
+                hid_bull = True
+                score += 3
                 signals.append(("🔒 Hidden Bullish Div",
-                                 f"Giá HL ({p2v:,.0f}>{p1v:,.0f}) RSI LL ({r2[1]:.1f}<{r1[1]:.1f}) → Tiếp tục tăng",
+                                 f"Giá HL ({p2v:,.0f}>{p1v:,.0f}) RSI LL ({r2[1]:.1f}<{r1[1]:.1f}) → Tiếp tục uptrend mạnh",
                                  "bullish"))
+            if reg_bull and hid_bull:
+                break
 
     return {"reg_bull": reg_bull, "reg_bear": reg_bear,
             "hid_bull": hid_bull, "hid_bear": hid_bear,
@@ -1742,9 +1795,8 @@ with _tab1:
                                       line=dict(color="#FF7043", width=1.2, dash="dot"), name="StochRSI D"), row=3, col=1)
         for lv, lc in [(80, "rgba(255,80,80,0.5)"), (70, "rgba(255,80,80,0.3)"),
                         (30, "rgba(80,200,80,0.3)"), (20, "rgba(80,200,80,0.5)")]:
-            fig.add_shape(type="line", xref="paper", yref="y3",
-                          x0=0, x1=1, y0=lv, y1=lv,
-                          line=dict(color=lc, width=1, dash="dash"))
+            fig.add_hline(y=lv, line_color=lc, line_width=1, line_dash="dash",
+                          row=3, col=1)
         fig.add_trace(go.Scatter(x=df["time"], y=df["ADX"],
                                   line=dict(color="#E040FB", width=1.3, dash="dot"), name="ADX"), row=3, col=1)
 
@@ -1997,8 +2049,8 @@ with _tab1:
 </div>""", unsafe_allow_html=True)
         if ovf_result["signals"]:
             ovf_c1, ovf_c2 = st.columns(2)
-            for i, (sn, sd, st_) in enumerate(ovf_result["signals"]):
-                sc = {"bullish": "#00E676", "bearish": "#FF5252", "neutral": "#FFD740"}.get(st_, "#aaa")
+            for i, (sn, sd, stype_) in enumerate(ovf_result["signals"]):
+                sc = {"bullish": "#00E676", "bearish": "#FF5252", "neutral": "#FFD740"}.get(stype_, "#aaa")
                 with (ovf_c1 if i % 2 == 0 else ovf_c2):
                     st.markdown(
                         f"<div style='border-left:3px solid {sc};padding:8px 12px;margin:4px 0;"
@@ -2067,6 +2119,177 @@ with _tab1:
                     f"<b style='color:{sc};'>{sname}</b><br>"
                     f"<span style='color:#bbb;font-size:0.82rem;'>{sdesc}</span></div>",
                     unsafe_allow_html=True)
+
+        # ── RSI Divergence Chart (40 phiên gần nhất) ─────────────────────
+        with st.expander("📊 Xem Biểu Đồ RSI Phân Kỳ (40 phiên gần nhất)", expanded=any([div["reg_bull"], div["reg_bear"], div["hid_bull"], div["hid_bear"]])):
+            div_window = min(40, len(df))
+            df_div = df.tail(div_window).reset_index(drop=True)
+            prices_dv = df_div["close"].values
+            rsi_dv    = df_div["RSI"].fillna(50).values
+            n_dv      = len(prices_dv)
+
+            fig_div = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                     row_heights=[0.55, 0.45],
+                                     vertical_spacing=0.04,
+                                     subplot_titles=("Giá đóng cửa — Phát hiện Phân Kỳ",
+                                                      "RSI(14) — Phân Kỳ RSI"))
+
+            # Vẽ đường giá
+            fig_div.add_trace(go.Scatter(x=df_div["time"], y=df_div["close"],
+                                          line=dict(color="#40C4FF", width=2), name="Giá"), row=1, col=1)
+
+            # Vẽ RSI
+            fig_div.add_trace(go.Scatter(x=df_div["time"], y=df_div["RSI"],
+                                          line=dict(color="#FF9800", width=2), name="RSI"), row=2, col=1)
+            for lv_d, lc_d in [(70, "rgba(255,80,80,0.4)"), (30, "rgba(80,200,80,0.4)"), (50, "rgba(180,180,180,0.2)")]:
+                fig_div.add_hline(y=lv_d, line_color=lc_d, line_width=1, line_dash="dash", row=2, col=1)
+
+            # Tính lại swings để vẽ markers
+            def _find_swings_chart(arr, is_high, strength=2):
+                n_ = len(arr)
+                out = []
+                s = max(1, strength)
+                for ii in range(s * 2, n_ - s * 2):
+                    if is_high:
+                        if all(arr[ii] > arr[ii - k] for k in range(1, s + 1)) and \
+                           all(arr[ii] > arr[ii + k] for k in range(1, s + 1)):
+                            out.append(ii)
+                    else:
+                        if all(arr[ii] < arr[ii - k] for k in range(1, s + 1)) and \
+                           all(arr[ii] < arr[ii + k] for k in range(1, s + 1)):
+                            out.append(ii)
+                # fallback strength=1 nếu không đủ
+                if len(out) < 2:
+                    out = []
+                    for ii in range(2, n_ - 2):
+                        if is_high:
+                            if arr[ii] > arr[ii-1] and arr[ii] > arr[ii+1]:
+                                out.append(ii)
+                        else:
+                            if arr[ii] < arr[ii-1] and arr[ii] < arr[ii+1]:
+                                out.append(ii)
+                return out
+
+            ph_idx = _find_swings_chart(prices_dv, True)
+            pl_idx = _find_swings_chart(prices_dv, False)
+            rh_idx = _find_swings_chart(rsi_dv, True)
+            rl_idx = _find_swings_chart(rsi_dv, False)
+
+            # Vẽ markers swing trên giá
+            if ph_idx:
+                fig_div.add_trace(go.Scatter(
+                    x=[df_div["time"].iloc[i] for i in ph_idx],
+                    y=[prices_dv[i] for i in ph_idx],
+                    mode="markers", marker=dict(color="#FF5252", size=8, symbol="triangle-down"),
+                    name="Price High", showlegend=True), row=1, col=1)
+            if pl_idx:
+                fig_div.add_trace(go.Scatter(
+                    x=[df_div["time"].iloc[i] for i in pl_idx],
+                    y=[prices_dv[i] for i in pl_idx],
+                    mode="markers", marker=dict(color="#00C853", size=8, symbol="triangle-up"),
+                    name="Price Low", showlegend=True), row=1, col=1)
+
+            # Vẽ markers swing trên RSI
+            if rh_idx:
+                fig_div.add_trace(go.Scatter(
+                    x=[df_div["time"].iloc[i] for i in rh_idx],
+                    y=[rsi_dv[i] for i in rh_idx],
+                    mode="markers", marker=dict(color="#FF5252", size=7, symbol="triangle-down"),
+                    name="RSI High", showlegend=False), row=2, col=1)
+            if rl_idx:
+                fig_div.add_trace(go.Scatter(
+                    x=[df_div["time"].iloc[i] for i in rl_idx],
+                    y=[rsi_dv[i] for i in rl_idx],
+                    mode="markers", marker=dict(color="#00C853", size=7, symbol="triangle-up"),
+                    name="RSI Low", showlegend=False), row=2, col=1)
+
+            # Vẽ đường phân kỳ nếu phát hiện
+            def _nearest_idx(p_idx, swing_idxs, max_dist=10):
+                candidates = [i for i in swing_idxs if abs(i - p_idx) <= max_dist]
+                return min(candidates, key=lambda x: abs(x - p_idx)) if candidates else None
+
+            # Regular Bullish: nối 2 đáy giá + 2 đáy RSI
+            if div["reg_bull"] and len(pl_idx) >= 2:
+                i2, i1 = pl_idx[-1], pl_idx[-2]
+                r2_ = _nearest_idx(i2, rl_idx)
+                r1_ = _nearest_idx(i1, rl_idx)
+                if r1_ is not None and r2_ is not None:
+                    fig_div.add_trace(go.Scatter(
+                        x=[df_div["time"].iloc[i1], df_div["time"].iloc[i2]],
+                        y=[prices_dv[i1], prices_dv[i2]],
+                        mode="lines", line=dict(color="#00C853", width=2.5, dash="dot"),
+                        name="📈 Reg Bull Div", showlegend=True), row=1, col=1)
+                    fig_div.add_trace(go.Scatter(
+                        x=[df_div["time"].iloc[r1_], df_div["time"].iloc[r2_]],
+                        y=[rsi_dv[r1_], rsi_dv[r2_]],
+                        mode="lines", line=dict(color="#00C853", width=2.5, dash="dot"),
+                        showlegend=False), row=2, col=1)
+
+            # Regular Bearish: nối 2 đỉnh giá + 2 đỉnh RSI
+            if div["reg_bear"] and len(ph_idx) >= 2:
+                i2, i1 = ph_idx[-1], ph_idx[-2]
+                r2_ = _nearest_idx(i2, rh_idx)
+                r1_ = _nearest_idx(i1, rh_idx)
+                if r1_ is not None and r2_ is not None:
+                    fig_div.add_trace(go.Scatter(
+                        x=[df_div["time"].iloc[i1], df_div["time"].iloc[i2]],
+                        y=[prices_dv[i1], prices_dv[i2]],
+                        mode="lines", line=dict(color="#FF5252", width=2.5, dash="dot"),
+                        name="📉 Reg Bear Div", showlegend=True), row=1, col=1)
+                    fig_div.add_trace(go.Scatter(
+                        x=[df_div["time"].iloc[r1_], df_div["time"].iloc[r2_]],
+                        y=[rsi_dv[r1_], rsi_dv[r2_]],
+                        mode="lines", line=dict(color="#FF5252", width=2.5, dash="dot"),
+                        showlegend=False), row=2, col=1)
+
+            # Hidden Bullish: nối 2 đáy giá + 2 đáy RSI (màu xanh nước)
+            if div["hid_bull"] and len(pl_idx) >= 2:
+                i2, i1 = pl_idx[-1], pl_idx[-2]
+                r2_ = _nearest_idx(i2, rl_idx)
+                r1_ = _nearest_idx(i1, rl_idx)
+                if r1_ is not None and r2_ is not None:
+                    fig_div.add_trace(go.Scatter(
+                        x=[df_div["time"].iloc[i1], df_div["time"].iloc[i2]],
+                        y=[prices_dv[i1], prices_dv[i2]],
+                        mode="lines", line=dict(color="#40C4FF", width=2.5, dash="dash"),
+                        name="🔒 Hid Bull Div", showlegend=True), row=1, col=1)
+                    fig_div.add_trace(go.Scatter(
+                        x=[df_div["time"].iloc[r1_], df_div["time"].iloc[r2_]],
+                        y=[rsi_dv[r1_], rsi_dv[r2_]],
+                        mode="lines", line=dict(color="#40C4FF", width=2.5, dash="dash"),
+                        showlegend=False), row=2, col=1)
+
+            # Hidden Bearish: nối 2 đỉnh giá + 2 đỉnh RSI (màu cam)
+            if div["hid_bear"] and len(ph_idx) >= 2:
+                i2, i1 = ph_idx[-1], ph_idx[-2]
+                r2_ = _nearest_idx(i2, rh_idx)
+                r1_ = _nearest_idx(i1, rh_idx)
+                if r1_ is not None and r2_ is not None:
+                    fig_div.add_trace(go.Scatter(
+                        x=[df_div["time"].iloc[i1], df_div["time"].iloc[i2]],
+                        y=[prices_dv[i1], prices_dv[i2]],
+                        mode="lines", line=dict(color="#FF9100", width=2.5, dash="dash"),
+                        name="🔒 Hid Bear Div", showlegend=True), row=1, col=1)
+                    fig_div.add_trace(go.Scatter(
+                        x=[df_div["time"].iloc[r1_], df_div["time"].iloc[r2_]],
+                        y=[rsi_dv[r1_], rsi_dv[r2_]],
+                        mode="lines", line=dict(color="#FF9100", width=2.5, dash="dash"),
+                        showlegend=False), row=2, col=1)
+
+            fig_div.update_layout(
+                template="plotly_dark", height=550,
+                xaxis_rangeslider_visible=False,
+                legend=dict(orientation="h", yanchor="bottom", y=1.01,
+                            xanchor="right", x=1, font=dict(size=9),
+                            bgcolor="rgba(0,0,0,0.3)"),
+                margin=dict(l=10, r=10, t=40, b=10))
+            fig_div.update_xaxes(showgrid=False)
+            fig_div.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.05)")
+            st.plotly_chart(fig_div, use_container_width=True)
+
+            if not any([div["reg_bull"], div["reg_bear"], div["hid_bull"], div["hid_bear"]]):
+                st.info("ℹ️ Chưa phát hiện phân kỳ RSI rõ ràng trong 40 phiên gần nhất. "
+                        "Các điểm tam giác trên biểu đồ là các swing high/low được thuật toán nhận diện.")
 
         # ── Supply & Demand Zones ──────────────────────────────────────────
         st.markdown("---")
